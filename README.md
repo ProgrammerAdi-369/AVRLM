@@ -93,8 +93,29 @@ During implementation, contributors should agree on interface formats and tensor
 2. **Integration:** Connect the data pipeline, SNN model, grid engine, and dashboard.
 3. **Benchmarking and Presentation:** Run edge-constrained benchmarks, finalize performance measurements, and prepare the demonstration.
 
+## Guide
+
+# Clone the project
+
+git clone https://github.com/ProgrammerAdi-369/AVRLM.git
+
+# Enter project
+
+cd AVRLM
+
+# Get latest changes
+
+git pull origin main
+
+# Work on the project...
+
+# Save your changes to Git
+
+git add .
+git commit -m "Describe your changes"
+git push origin main
+
 ## License
 
-The provided project documentation does not specify a software license.
-
-A license should be selected and added to the repository before distribution.
+MIT License
+Copyright (c) 2026 AVRLM Contributors
