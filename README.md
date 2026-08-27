@@ -95,25 +95,32 @@ During implementation, contributors should agree on interface formats and tensor
 
 ## Guide
 
-# Clone the project
+1.**Clone the project**
 
+```bash
 git clone https://github.com/ProgrammerAdi-369/AVRLM.git
+```
 
-# Enter project
+2. **Enter project**
 
+```bash
 cd AVRLM
+```
 
-# Get latest changes
+3.**Get latest changes**
 
+```bash
 git pull origin main
+```
 
-# Work on the project...
+4.**Work on the project**
+Save your changes to Git
 
-# Save your changes to Git
-
+```bash
 git add .
 git commit -m "Describe your changes"
 git push origin main
+```
 
 ## License
 
