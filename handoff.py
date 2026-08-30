@@ -6,9 +6,36 @@ persistence (Task 2) is kept in a module-level GridState singleton here -
 see implementation_plan_next_tasks.md Task 3 for the reasoning.
 """
 
+import numpy as np
+
 from grid_state import GridState
+from aggregate import validate_labels, coerce_spikes
 
 _state = GridState()
+
+
+def validate_inputs(points, labels, spikes) -> None:
+    """Shape/length sanity check at the true pipeline entry point, run
+    before the narrower per-field checks (validate_labels/coerce_spikes)
+    so a shape mismatch fails here with a clear message instead of a
+    confusing error deeper in the stack."""
+    points = np.asarray(points)
+    labels = np.asarray(labels)
+    spikes = np.asarray(spikes)
+
+    if points.ndim != 2 or points.shape[1] != 4:
+        raise ValueError(
+            f"points must have shape (N, 4), got {points.shape}"
+        )
+    n = points.shape[0]
+    if labels.shape != (n,):
+        raise ValueError(
+            f"labels must have shape ({n},) to match points, got {labels.shape}"
+        )
+    if spikes.shape != (n,):
+        raise ValueError(
+            f"spikes must have shape ({n},) to match points, got {spikes.shape}"
+        )
 
 # Bytes-per-record estimate for memory_metrics, from CellRecord's actual
 # stored field dtypes (not a guessed constant): is_fine(bool,1) +
@@ -24,6 +51,9 @@ def generate_2_5d_grid(points, labels, spikes):
     (cell_key, CellRecord) pairs for every currently-known cell
     (accumulated across all frames seen so far via the internal
     event-driven GridState), reflecting this frame's update."""
+    validate_inputs(points, labels, spikes)
+    validate_labels(labels)
+    spikes = coerce_spikes(spikes)
     _state.update(points, labels, spikes)
     return _state.snapshot()
 

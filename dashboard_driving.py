@@ -6,9 +6,7 @@ import torch
 import time
 import os
 import math
-import sys
 
-sys.path.append(os.path.join(os.path.dirname(__file__), 'AVRLM'))
 from spiking_model import SpikingPointNet
 from handoff import generate_2_5d_grid, memory_metrics
 from grid_state import GridState
@@ -20,6 +18,8 @@ try:
     HAS_SKLEARN = True
 except ImportError:
     HAS_SKLEARN = False
+
+from dashboard_state import advance_frame_index
 
 st.set_page_config(page_title="DRDO Tactical UGV Perception", layout="wide")
 
@@ -72,7 +72,7 @@ st.sidebar.markdown(
 
 st.sidebar.markdown("---")
 if os.path.exists(CHECKPOINT_PATH):
-    st.sidebar.success(f"Loaded: {CHECKPOINT_PATH}")
+    st.sidebar.success(f"Loaded: {os.path.basename(CHECKPOINT_PATH)}")
 else:
     st.sidebar.error("No checkpoint found -- run synthetic_train_loop_v5.py")
 
@@ -191,16 +191,43 @@ def add_bbox_trace(fig, obj, color):
                                     showlegend=False, hoverinfo="skip"))
 
 
-if st.button("Start Driving Sequence", use_container_width=True):
+# --- Session-state-driven playback ------------------------------------
+# Previously this ran as one blocking Python for-loop over every frame
+# inside a single button-click script run, with per-frame state (sequence,
+# frame_idx, GridState) living only as local variables in that call stack.
+# A WebSocket reconnect mid-run (network blip, tab backgrounding) triggers
+# a fresh script run in which `st.button(...)` is no longer True, so the
+# whole block was skipped and the page reset to the pre-run idle screen -
+# every committed frame lost with no warning (see Reports/AUDIT-v2.md
+# \u00a75.2, live-reproduced). Fix: persist run state in st.session_state
+# (survives across reruns on the same browser session) and process exactly
+# one frame per script run via st.rerun(), instead of one giant blocking
+# loop. A reconnect-triggered rerun now just resumes at
+# st.session_state.driving_frame_idx instead of losing it.
+if "driving_active" not in st.session_state:
+    st.session_state.driving_active = False
+    st.session_state.driving_frame_idx = 0
+    st.session_state.driving_sequence = None
+
+start_clicked = st.button("Start Driving Sequence", use_container_width=True)
+if start_clicked:
     import handoff
     handoff._state = GridState()
-    sequence = build_driving_sequence(n_frames=n_frames)
-    progress_bar = progress_placeholder.progress(0)
+    st.session_state.driving_active = True
+    st.session_state.driving_frame_idx = 0
+    st.session_state.driving_sequence = build_driving_sequence(n_frames=n_frames)
 
-    with torch.no_grad():
-        for frame_idx, (points, labels, spikes, ugv_world_pos) in enumerate(sequence):
-            start_time = time.perf_counter()
+if st.session_state.driving_active:
+    sequence = st.session_state.driving_sequence
+    total_frames = len(sequence)
+    frame_idx = st.session_state.driving_frame_idx
+    progress_bar = progress_placeholder.progress(frame_idx / total_frames)
 
+    if frame_idx < total_frames:
+        points, labels, spikes, ugv_world_pos = sequence[frame_idx]
+        start_time = time.perf_counter()
+
+        with torch.no_grad():
             norm_tensor, raw_sampled = scene_to_tensor(points)
             inputs = torch.tensor(norm_tensor, dtype=torch.float32).unsqueeze(0).to(device)
 
@@ -209,49 +236,52 @@ if st.button("Start Driving Sequence", use_container_width=True):
             preds_np = torch.argmax(total_spikes, dim=1).squeeze().cpu().numpy()
             spikes_np = total_spikes.sum(dim=1).squeeze().cpu().numpy()
 
-            active_map = generate_2_5d_grid(raw_sampled, preds_np, spikes_np)
-            mem_stats = memory_metrics()
-            perf = profiler.evaluate_efficiency(spk_rec, time.perf_counter() - start_time, 1)
+        active_map = generate_2_5d_grid(raw_sampled, preds_np, spikes_np)
+        mem_stats = memory_metrics()
+        perf = profiler.evaluate_efficiency(spk_rec, time.perf_counter() - start_time, 1)
 
-            records = []
-            for key, cell in active_map:
-                r = math.sqrt(cell.center_x ** 2 + cell.center_y ** 2)
-                records.append({
-                    "x": float(cell.center_x), "y": float(cell.center_y),
-                    "z": float(max(0.05, cell.elevation_max)),
-                    "Class": CLASS_NAMES.get(int(cell.class_id), "Drivable"),
-                    "size": 2.0 if cell.is_fine else 4.0,
-                    "radius": r,
-                })
-            df = pd.DataFrame(records)
-            need_clusters = HAS_SKLEARN and (show_bboxes or filter_noise) and not df.empty
-            if need_clusters:
-                objects, clustered_points = cluster_objects(df, cluster_eps, cluster_min_pts)
-            else:
-                objects, clustered_points = [], None
+        records = []
+        for key, cell in active_map:
+            r = math.sqrt(cell.center_x ** 2 + cell.center_y ** 2)
+            records.append({
+                "x": float(cell.center_x), "y": float(cell.center_y),
+                "z": float(max(0.05, cell.elevation_max)),
+                "Class": CLASS_NAMES.get(int(cell.class_id), "Drivable"),
+                "size": 2.0 if cell.is_fine else 4.0,
+                "radius": r,
+            })
+        df = pd.DataFrame(records)
+        need_clusters = HAS_SKLEARN and (show_bboxes or filter_noise) and not df.empty
+        if need_clusters:
+            objects, clustered_points = cluster_objects(df, cluster_eps, cluster_min_pts)
+        else:
+            objects, clustered_points = [], None
 
-            frame_counter_placeholder.metric("Frame", f"{frame_idx + 1}/{n_frames}")
-            ugv_pos_placeholder.caption(f"UGV world position: x={ugv_world_pos[0]:.1f}m, y={ugv_world_pos[1]:.1f}m")
+        # Single source of truth for the displayed frame number (1-indexed)
+        # - both the HUD metric and the canvas caption below read the same
+        # `frame_display` value, instead of one using frame_idx+1 and the
+        # other using raw frame_idx as they previously did (AUDIT-v2 \u00a75.2's
+        # "Frame 5/40" vs "Frame 3" mismatch).
+        frame_display = frame_idx + 1
+        frame_counter_placeholder.metric("Frame", f"{frame_display}/{total_frames}")
+        ugv_pos_placeholder.caption(f"UGV world position: x={ugv_world_pos[0]:.1f}m, y={ugv_world_pos[1]:.1f}m")
 
-            fps_metric.metric("Speed", f"{perf['fps']:.1f} FPS")
-            cells_metric.metric("Grid Cells", mem_stats['active_cell_count'])
-            savings_metric.metric("Memory", f"{mem_stats['savings_ratio']:.1f}x")
-            sparsity_metric.metric("Sparsity", f"{perf['sparsity_pct']:.1f}%")
-            energy_metric.metric("Energy Saved", f"{perf['energy_saved_pj']/1e6:.2f} uJ")
-            objects_metric.metric("Objects", len(objects))
+        fps_metric.metric("Speed", f"{perf['fps']:.1f} FPS")
+        cells_metric.metric("Grid Cells", mem_stats['active_cell_count'])
+        savings_metric.metric("Memory", f"{mem_stats['savings_ratio']:.1f}x")
+        sparsity_metric.metric("Sparsity", f"{perf['sparsity_pct']:.1f}%")
+        energy_metric.metric("Energy Saved", f"{perf['energy_saved_pj']/1e6:.2f} uJ")
+        objects_metric.metric("Objects", len(objects))
 
-            if len(df) == 0:
-                # Deliberately NOT touching map_placeholder here. Swapping it
-                # to a .warning() box and back every time a frame has zero
-                # active cells is exactly what produces a chart that appears
-                # to flash/disappear -- better to just leave the previous
-                # frame on screen (nothing changed, so nothing to redraw).
-                debug_placeholder.caption(f"Frame {frame_idx} | 0 active cells (no change this frame)")
-                detection_panel.info("No discrete objects detected this frame.")
-                progress_bar.progress((frame_idx + 1) / n_frames)
-                time.sleep(frame_delay)
-                continue
-
+        if len(df) == 0:
+            # Deliberately NOT touching map_placeholder here. Swapping it
+            # to a .warning() box and back every time a frame has zero
+            # active cells is exactly what produces a chart that appears
+            # to flash/disappear -- better to just leave the previous
+            # frame on screen (nothing changed, so nothing to redraw).
+            debug_placeholder.caption(f"Frame {frame_display} | 0 active cells (no change this frame)")
+            detection_panel.info("No discrete objects detected this frame.")
+        else:
             fig = go.Figure()
             for class_label, color in CLASS_COLOR.items():
                 use_filtered = (
@@ -306,19 +336,18 @@ if st.button("Start Driving Sequence", use_container_width=True):
                 uirevision="constant",
             )
 
-            # NOTE: no explicit `key` here. Streamlit requires an explicit
-            # `key` to be unique across the WHOLE script run, and this call
-            # happens once per frame inside the same run -- reusing the same
-            # literal key every iteration is exactly what raised
-            # StreamlitDuplicateElementKey on frame 2. We don't need a key
-            # for the flicker fix anyway: `map_placeholder` is the same
-            # st.empty() slot every iteration (so content is replaced in
-            # place, not remounted), and `uirevision="constant"` above is
-            # what actually preserves the camera angle/zoom across updates.
+            # NOTE: no explicit `key` here. Each script run now renders at
+            # most one frame (see the session-state restructuring above),
+            # so there's no risk of the same literal key being reused
+            # within one run the way the old per-run loop could hit
+            # StreamlitDuplicateElementKey. `map_placeholder` is the same
+            # st.empty() slot every run (content replaced in place, not
+            # remounted), and `uirevision="constant"` above is what
+            # actually preserves the camera angle/zoom across updates.
             map_placeholder.plotly_chart(fig, use_container_width=True)
 
             debug_placeholder.caption(
-                f"Frame {frame_idx} | {len(df)} cells | "
+                f"Frame {frame_display} | {len(df)} cells | "
                 f"fine (\u226410m): {int((df['radius'] <= 10.0).sum())} | "
                 f"coarse (>10m): {int((df['radius'] > 10.0).sum())}"
             )
@@ -335,7 +364,10 @@ if st.button("Start Driving Sequence", use_container_width=True):
             else:
                 detection_panel.info("No discrete objects detected this frame.")
 
-            progress_bar.progress((frame_idx + 1) / n_frames)
-            time.sleep(frame_delay)
-
-    progress_placeholder.success("Sequence complete.")
+        st.session_state.driving_frame_idx = advance_frame_index(frame_idx, total_frames)
+        progress_bar.progress(st.session_state.driving_frame_idx / total_frames)
+        time.sleep(frame_delay)
+        st.rerun()
+    else:
+        st.session_state.driving_active = False
+        progress_placeholder.success("Sequence complete.")

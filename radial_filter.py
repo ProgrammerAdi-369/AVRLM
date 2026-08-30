@@ -6,6 +6,8 @@ the interface contract and boundary convention this implements.
 
 import numpy as np
 
+from grid import INNER_RADIUS, OUTER_RADIUS
+
 
 def radial_filter(points: np.ndarray):
     """
@@ -23,8 +25,8 @@ def radial_filter(points: np.ndarray):
     section 4) - use prefilter_mask() below to gate what reaches grid.py.
     """
     r = np.sqrt(points[:, 0] ** 2 + points[:, 1] ** 2)
-    inner_mask = r <= 10.0
-    outer_mask = (r > 10.0) & (r <= 100.0)
+    inner_mask = r <= INNER_RADIUS
+    outer_mask = (r > INNER_RADIUS) & (r <= OUTER_RADIUS)
     return inner_mask, outer_mask
 
 
@@ -35,4 +37,4 @@ def prefilter_mask(points: np.ndarray) -> np.ndarray:
     already reduced by this mask (see CLAUDE.md/implementation plan Task 0).
     """
     r = np.sqrt(points[:, 0] ** 2 + points[:, 1] ** 2)
-    return r <= 100.0
+    return r <= OUTER_RADIUS

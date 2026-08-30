@@ -6,9 +6,7 @@ import torch
 import time
 import os
 import math
-import sys
 
-sys.path.append(os.path.join(os.path.dirname(__file__), 'AVRLM'))
 from spiking_model import SpikingPointNet
 from handoff import generate_2_5d_grid, memory_metrics
 from grid_state import GridState
@@ -29,6 +27,11 @@ st.set_page_config(page_title="DRDO Tactical UGV Perception", layout="wide")
 # Claude Design canvas runtime) per ENHANCE-dash_pro.md §0.
 # ---------------------------------------------------------------------------
 st.markdown("""
+/* Hide Streamlit's top header */
+[data-testid="stHeader"] {
+    display: none;
+}
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
 <style>

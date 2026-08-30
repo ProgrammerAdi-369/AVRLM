@@ -77,12 +77,21 @@ class VariableResolutionGrid:
         r_parent_iy = np.floor((ry + OUTER_RADIUS) / OUTER_RES).astype(np.int64)
 
         # Decide subdivision once per unique parent cell (never per point),
-        # so a single cell can't be half-subdivided.
-        parent_pairs = np.stack([r_parent_ix, r_parent_iy], axis=1)
-        unique_pairs, inverse = np.unique(parent_pairs, axis=0, return_inverse=True)
+        # so a single cell can't be half-subdivided. Dedup via a packed 1D
+        # int64 key instead of np.unique(axis=0) on 2 columns - a 1D sort
+        # is materially cheaper than the row-wise lexsort axis=0 takes
+        # (profiled: np.unique(axis=0)'s argsort dominated grid_state
+        # update() cost, see Reports/AUDIT-v2.md Phase 7). PARENT_KEY_MULT
+        # only needs to exceed the max parent index along one axis
+        # (2*OUTER_RADIUS/OUTER_RES = 400), 1024 gives comfortable margin.
+        PARENT_KEY_MULT = 1024
+        parent_packed = r_parent_ix * PARENT_KEY_MULT + r_parent_iy
+        _, first_idx, inverse = np.unique(parent_packed, return_index=True, return_inverse=True)
         inverse = inverse.reshape(-1)
+        unique_ix = r_parent_ix[first_idx]
+        unique_iy = r_parent_iy[first_idx]
 
-        unique_center_x, unique_center_y = parent_cell_center(unique_pairs[:, 0], unique_pairs[:, 1])
+        unique_center_x, unique_center_y = parent_cell_center(unique_ix, unique_iy)
         unique_subdivide = np.sqrt(unique_center_x ** 2 + unique_center_y ** 2) <= INNER_RADIUS
 
         r_is_fine = unique_subdivide[inverse]

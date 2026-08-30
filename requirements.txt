@@ -1,0 +1,17 @@
+# Reconciled against actual imports across the repo (see Reports/AUDIT-v2.md
+# §7.3/Phase 10) rather than README.md's broader aspirational stack. No
+# version pins beyond a floor: this needs to run on judges' machines with
+# whatever CUDA setup they have, so torch in particular is left unpinned.
+streamlit>=1.50
+pandas>=2.0
+numpy>=1.26
+plotly>=5.20
+torch>=2.0
+snntorch>=1.0
+scikit-learn>=1.3
+
+# Not currently imported anywhere in the codebase (Phase 7's performance
+# fix used plain NumPy, not Numba - see Reports/AUDIT-v2.md Phase 7).
+# Left commented out rather than omitted so it's easy to add back if a
+# future Numba pass on GridState.update() happens.
+# numba>=0.60

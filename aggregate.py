@@ -8,11 +8,45 @@ Vectorized only (NumPy grouping via np.unique/np.bincount), per CLAUDE.md -
 never a Python loop over points.
 """
 
+import warnings
+
 import numpy as np
 
 from grid import parent_cell_center, sub_cell_center
 
 NUM_CLASSES = 3  # fixed: 0=drivable, 1=static obstacle, 2=dynamic object
+
+
+def validate_labels(labels: np.ndarray, num_classes: int = NUM_CLASSES) -> None:
+    """Raises ValueError if any label falls outside [0, num_classes)."""
+    if labels.size == 0:
+        return
+    lo, hi = int(labels.min()), int(labels.max())
+    if lo < 0 or hi >= num_classes:
+        bad = labels[(labels < 0) | (labels >= num_classes)]
+        raise ValueError(
+            f"labels contains value {int(bad[0])}, outside valid range "
+            f"[0, {num_classes})"
+        )
+
+
+def coerce_spikes(spikes: np.ndarray) -> np.ndarray:
+    """Coerces spikes to the documented integer-count contract
+    (uint8/int32). Real SNN output (spk_rec.sum(dim=0)) legitimately
+    arrives as float; round to the nearest integer and warn once (not
+    raise) when rounding actually changes a value by more than a tiny
+    epsilon - this is expected input shape, not malformed input."""
+    spikes = np.asarray(spikes)
+    if np.issubdtype(spikes.dtype, np.integer):
+        return spikes
+    rounded = np.round(spikes)
+    if np.any(np.abs(spikes - rounded) > 1e-6):
+        warnings.warn(
+            "spikes contains non-integer values; rounding to nearest "
+            "integer count per interface contract (uint8/int32)",
+            stacklevel=2,
+        )
+    return rounded.astype(np.int64)
 
 
 class CellStats:
@@ -41,6 +75,12 @@ class CellStats:
 def aggregate_cells(points: np.ndarray, labels: np.ndarray, spikes: np.ndarray, assignment) -> CellStats:
     mask = assignment.in_range
     z = points[mask, 2]
+    nan_z = np.isnan(z)
+    if np.any(nan_z):
+        bad_indices = np.where(mask)[0][nan_z]
+        raise ValueError(
+            f"points[:, 2] (Z) contains NaN at point indices {bad_indices.tolist()}"
+        )
     lbl = labels[mask].astype(np.int64)
     spk = spikes[mask].astype(np.float64)
 
@@ -58,10 +98,19 @@ def aggregate_cells(points: np.ndarray, labels: np.ndarray, spikes: np.ndarray, 
         return CellStats(empty_i, empty_i, empty_i, empty_i, empty_b,
                           empty_f, empty_f, empty_f, empty_f, empty_i, empty_i, empty_f)
 
-    cell_key = np.stack([parent_ix, parent_iy, sub_ix, sub_iy], axis=1)
-    unique_cells, group_id = np.unique(cell_key, axis=0, return_inverse=True)
+    # Dedup via a packed 1D int64 key instead of np.unique(axis=0) on 4
+    # columns - a 1D sort is materially cheaper than the row-wise lexsort
+    # axis=0 takes (profiled: np.unique(axis=0)'s argsort was the second-
+    # largest cost in a full grid_state.update(), see
+    # Reports/AUDIT-v2.md Phase 7). PARENT_KEY_MULT (>400, grid.py's
+    # parent-index range) and SUB_KEY_MULT (>10, sub_ix/sub_iy's -1..9
+    # range shifted to 0..10) both use power-of-2 margins.
+    PARENT_KEY_MULT = 1024
+    SUB_KEY_MULT = 16
+    cell_packed = ((parent_ix * PARENT_KEY_MULT + parent_iy) * SUB_KEY_MULT + (sub_ix + 1)) * SUB_KEY_MULT + (sub_iy + 1)
+    _, first_idx, group_id = np.unique(cell_packed, return_index=True, return_inverse=True)
     group_id = group_id.reshape(-1)
-    n_cells = unique_cells.shape[0]
+    n_cells = first_idx.shape[0]
 
     # elevation_max: vectorized scatter-max
     elevation_max = np.full(n_cells, -np.inf, dtype=np.float64)
@@ -74,17 +123,21 @@ def aggregate_cells(points: np.ndarray, labels: np.ndarray, spikes: np.ndarray, 
     mean_z = sum_z / counts
     elevation_var = np.maximum(sum_z2 / counts - mean_z ** 2, 0.0)
 
-    # majority class vote via bincount over (group, class) flattened index
+    # majority class vote via bincount over (group, class) flattened index.
+    # Ties favor the HIGHEST class ID (dynamic object over static obstacle
+    # over drivable terrain) - reverse columns before argmax so np.argmax's
+    # first-match tie-break lands on the highest original class index, then
+    # map the reversed index back. See Reports/AUDIT-v2.md §3.3/§8.3.
     class_flat_counts = np.bincount(group_id * NUM_CLASSES + lbl, minlength=n_cells * NUM_CLASSES)
     class_counts = class_flat_counts.reshape(n_cells, NUM_CLASSES)
-    class_id = np.argmax(class_counts, axis=1)
+    class_id = NUM_CLASSES - 1 - np.argmax(class_counts[:, ::-1], axis=1)
 
     spike_sum = np.bincount(group_id, weights=spk, minlength=n_cells)
 
-    cell_parent_ix = unique_cells[:, 0]
-    cell_parent_iy = unique_cells[:, 1]
-    cell_sub_ix = unique_cells[:, 2]
-    cell_sub_iy = unique_cells[:, 3]
+    cell_parent_ix = parent_ix[first_idx]
+    cell_parent_iy = parent_iy[first_idx]
+    cell_sub_ix = sub_ix[first_idx]
+    cell_sub_iy = sub_iy[first_idx]
     cell_is_fine = cell_sub_ix >= 0
 
     center_x = np.empty(n_cells, dtype=np.float64)
