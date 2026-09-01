@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AVRLM — Adaptive Variable Resolution LiDAR Mapping</title>
+<style>
+  :root{
+    --bg:#0a0e15;
+    --bg-alt:#0d1320;
+    --panel:#101827;
+    --panel-2:#131e30;
+    --border:#1e2b3d;
+    --border-soft:#182333;
+    --text:#e6edf5;
+    --text-dim:#93a2b8;
+    --text-faint:#5c6c82;
+    --cyan:#22d3ee;
+    --violet:#a78bfa;
+    --green:#34d399;
+    --amber:#fbbf24;
+    --magenta:#f472b6;
+    --mono: ui-monospace, 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html{scroll-behavior:smooth;}
+  body{
+    background:
+      radial-gradient(1200px 600px at 85% -10%, rgba(34,211,238,0.08), transparent 60%),
+      radial-gradient(1000px 500px at -10% 40%, rgba(167,139,250,0.07), transparent 60%),
+      var(--bg);
+    color:var(--text);
+    font-family:var(--sans);
+    line-height:1.55;
+    min-height:100vh;
+  }
+  code, .mono{font-family:var(--mono);}
+
+  /* ---------- Layout ---------- */
+  .shell{display:flex; min-height:100vh;}
+  nav.sidebar{
+    position:fixed; top:0; left:0; bottom:0; width:246px;
+    background:#0c1119;
+    border-right:1px solid var(--border-soft);
+    padding:28px 20px; display:flex; flex-direction:column; gap:6px;
+    z-index:50; overflow-y:auto;
+  }
+  nav.sidebar .brand{
+    display:flex; align-items:center; gap:10px; margin-bottom:26px;
+  }
+  nav.sidebar .brand .dot{
+    width:12px; height:12px; border-radius:3px;
+    background:linear-gradient(135deg, var(--cyan), var(--violet));
+    box-shadow:0 0 14px rgba(34,211,238,0.6);
+  }
+  nav.sidebar .brand span{font-weight:700; letter-spacing:0.06em; font-size:13px; color:var(--text);}
+  nav.sidebar a{
+    color:var(--text-dim); text-decoration:none; font-size:13.5px;
+    padding:8px 12px; border-radius:8px; border:1px solid transparent;
+    transition:all .15s ease; display:flex; align-items:center; gap:9px;
+  }
+  nav.sidebar a .n{
+    font-family:var(--mono); font-size:10.5px; color:var(--text-faint); width:16px;
+  }
+  nav.sidebar a:hover{color:var(--text); background:var(--panel); border-color:var(--border);}
+  nav.sidebar a.active{color:var(--cyan); background:rgba(34,211,238,0.08); border-color:rgba(34,211,238,0.25);}
+  nav.sidebar .foot{margin-top:auto; padding-top:16px; font-size:11px; color:var(--text-faint); border-top:1px solid var(--border-soft);}
+
+  main{margin-left:246px; width:calc(100% - 246px); position:relative;}
+  section{padding:74px 64px; max-width:1180px;}
+  section.narrow{max-width:980px;}
+  #hero{padding-top:90px; padding-bottom:60px;}
+
+  .eyebrow{
+    font-family:var(--mono); font-size:11.5px; letter-spacing:0.16em; text-transform:uppercase;
+    color:var(--cyan); margin-bottom:14px; display:flex; align-items:center; gap:10px;
+  }
+  .eyebrow::before{content:''; width:22px; height:1px; background:var(--cyan); opacity:.6;}
+  h1{font-size:44px; font-weight:800; letter-spacing:-0.02em; line-height:1.12;
+     background:linear-gradient(120deg, #fff 20%, var(--cyan) 65%, var(--violet) 100%);
+     -webkit-background-clip:text; background-clip:text; color:transparent; margin-bottom:18px;}
+  h2{font-size:28px; font-weight:750; letter-spacing:-0.01em; color:var(--text); margin-bottom:8px;}
+  h3{font-size:16.5px; font-weight:650; color:var(--text); margin-bottom:10px;}
+  p.lead{font-size:16.5px; color:var(--text-dim); max-width:680px;}
+  .section-tag{color:var(--text-faint); font-size:14px; margin-bottom:36px; max-width:720px;}
+
+  .pipeline-line{
+    display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin:26px 0 34px;
+    font-family:var(--mono); font-size:13px; color:var(--text-dim);
+  }
+  .pipeline-line b{color:var(--text); font-weight:600;}
+  .pipeline-line .arrow{color:var(--cyan);}
+
+  .badges{display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;}
+  .badge{
+    font-family:var(--mono); font-size:11.5px; padding:6px 12px; border-radius:20px;
+    border:1px solid var(--border); color:var(--text-dim); background:var(--panel);
+  }
+
+  /* ---------- Cards / grids ---------- */
+  .grid{display:grid; gap:16px;}
+  .grid-2{grid-template-columns:1fr 1fr;}
+  .grid-3{grid-template-columns:repeat(3, 1fr);}
+  .grid-5{grid-template-columns:repeat(5, 1fr);}
+  @media (max-width:980px){ .grid-2,.grid-3,.grid-5{grid-template-columns:1fr 1fr;} }
+
+  .card{
+    background:linear-gradient(180deg, var(--panel), var(--panel-2));
+    border:1px solid var(--border); border-radius:14px; padding:20px 22px;
+  }
+  .card h3 code{color:var(--cyan); font-size:15px;}
+  .card p{color:var(--text-dim); font-size:13.5px;}
+  .card ul{margin:10px 0 0 18px; color:var(--text-dim); font-size:13.3px;}
+  .card ul li{margin-bottom:5px;}
+  .card .pill{
+    display:inline-block; font-family:var(--mono); font-size:10.5px; letter-spacing:.04em;
+    color:var(--violet); border:1px solid rgba(167,139,250,0.35); background:rgba(167,139,250,0.08);
+    padding:2px 9px; border-radius:20px; margin-bottom:10px;
+  }
+
+  .callout{
+    border-left:3px solid var(--cyan); background:rgba(34,211,238,0.06);
+    border-radius:0 12px 12px 0; padding:16px 20px; font-size:13.8px; color:var(--text-dim);
+    margin-top:22px;
+  }
+  .callout b{color:var(--text);}
+
+  .stat-row{display:flex; gap:14px; flex-wrap:wrap; margin-top:20px;}
+  .stat{
+    background:var(--panel); border:1px solid var(--border); border-radius:12px;
+    padding:14px 20px; min-width:140px;
+  }
+  .stat .v{font-family:var(--mono); font-size:22px; font-weight:700; color:var(--cyan);}
+  .stat .l{font-size:11.5px; color:var(--text-faint); margin-top:2px; letter-spacing:.03em;}
+
+  table{width:100%; border-collapse:collapse; font-size:13.3px;}
+  th, td{text-align:left; padding:11px 14px; border-bottom:1px solid var(--border-soft); vertical-align:top;}
+  th{color:var(--text-faint); font-weight:600; font-size:11.5px; text-transform:uppercase; letter-spacing:.05em;}
+  td{color:var(--text-dim);}
+  td code, th code{color:var(--cyan);}
+  tr:hover td{background:rgba(255,255,255,0.015);}
+
+  .diagram-wrap{
+    background:radial-gradient(600px 300px at 20% 0%, rgba(34,211,238,0.05), transparent),var(--bg-alt);
+    border:1px solid var(--border); border-radius:16px; padding:26px; margin-top:8px;
+    overflow-x:auto;
+  }
+  .diagram-caption{
+    margin-top:14px; font-family:var(--mono); font-size:12px; color:var(--text-faint);
+    text-align:center; letter-spacing:.02em;
+  }
+  svg text{font-family:var(--sans);}
+  svg .mono-t{font-family:var(--mono);}
+
+  /* reveal on scroll */
+  .reveal{opacity:0; transform:translateY(16px); transition:opacity .6s ease, transform .6s ease;}
+  .reveal.in{opacity:1; transform:none;}
+
+  footer{padding:50px 64px 90px; color:var(--text-faint); font-size:12.5px; border-top:1px solid var(--border-soft); margin-top:20px;}
+
+  @media (max-width:900px){
+    nav.sidebar{position:relative; width:100%; height:auto; flex-direction:row; overflow-x:auto; padding:14px 18px; border-right:none; border-bottom:1px solid var(--border-soft);}
+    nav.sidebar .brand{display:none;}
+    nav.sidebar .foot{display:none;}
+    nav.sidebar a{white-space:nowrap;}
+    main{margin-left:0; width:100%;}
+    .shell{flex-direction:column;}
+    section{padding:48px 22px;}
+    h1{font-size:32px;}
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <nav class="sidebar" id="sidenav">
+    <div class="brand"><div class="dot"></div><span>AVRLM DOCS</span></div>
+    <a href="#hero"><span class="n">00</span>Overview</a>
+    <a href="#system-design"><span class="n">01</span>System Design</a>
+    <a href="#workflow"><span class="n">02</span>Per-Frame Workflow</a>
+    <a href="#snn"><span class="n">03</span>Spiking Neural Net</a>
+    <a href="#grid-engine"><span class="n">04</span>Grid Engine</a>
+    <a href="#data-contract"><span class="n">05</span>Data Contract</a>
+    <a href="#modules"><span class="n">06</span>Module Reference</a>
+    <a href="#tests"><span class="n">07</span>Test Coverage</a>
+    <a href="#notes"><span class="n">08</span>Notes</a>
+    <div class="foot">AVRLM · UGV Perception Stack<br>Generated from DOCUMENTATION.md</div>
+  </nav>
+
+  <main>
+
+    <!-- ============ HERO / OVERVIEW ============ -->
+    <section id="hero">
+      <div class="eyebrow reveal">Hackathon Project · UGV Perception</div>
+      <h1 class="reveal">Adaptive Variable Resolution<br>2.5D LiDAR Mapping</h1>
+      <p class="lead reveal">
+        A neuromorphic perception stack for an unmanned ground vehicle: a spiking
+        point-cloud classifier feeds a variable-resolution 2.5D grid engine — 5cm
+        precision near the vehicle, 50cm efficiency far away — which drives two live
+        Streamlit dashboards and a MAC-vs-AC energy story.
+      </p>
+
+      <div class="pipeline-line reveal">
+        <b>Raw LiDAR points</b><span class="arrow">→</span><b>Spiking PointNet++</b>
+        <span class="arrow">→</span><b>labels + spike counts</b><span class="arrow">→</span>
+        <b>Variable-Res 2.5D Grid Engine</b><span class="arrow">→</span><b>Streamlit Dashboards</b>
+      </div>
+
+      <div class="badges reveal">
+        <span class="badge">Python 3</span>
+        <span class="badge">NumPy — vectorized aggregation</span>
+        <span class="badge">PyTorch + snnTorch</span>
+        <span class="badge">Streamlit + Plotly</span>
+        <span class="badge">scikit-learn (DBSCAN)</span>
+      </div>
+
+      <div class="stat-row reveal">
+        <div class="stat"><div class="v">5cm / 50cm</div><div class="l">FINE / COARSE CELL SIZE</div></div>
+        <div class="stat"><div class="v">10m / 100m</div><div class="l">FOVEATED / FULL RADIUS</div></div>
+        <div class="stat"><div class="v">10×10</div><div class="l">SUB-CELLS PER PARENT</div></div>
+        <div class="stat"><div class="v">200,000</div><div class="l">CACHED CELL CAP (LRU)</div></div>
+      </div>
+    </section>
+
+    <!-- ============ SYSTEM DESIGN ============ -->
+    <section id="system-design">
+      <div class="eyebrow reveal">01 — Architecture</div>
+      <h2 class="reveal">System Design</h2>
+      <p class="section-tag reveal">
+        Four stages, one fixed contract in the middle. Anything left of
+        <code>handoff.py</code> can be swapped (real KITTI data vs. synthetic
+        scenes) without touching the grid engine; anything right of it only ever
+        sees the sparse cell output — never raw points.
+      </p>
+
+      <div class="diagram-wrap reveal">
+        <svg viewBox="0 0 1220 300" width="100%" role="img" aria-label="System design diagram">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#22d3ee"/>
+            </marker>
+            <linearGradient id="flowGrad" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#a78bfa"/>
+            </linearGradient>
+          </defs>
+
+          <!-- connectors -->
+          <line x1="205" y1="150" x2="255" y2="150" stroke="url(#flowGrad)" stroke-width="2.5" stroke-dasharray="6 5" marker-end="url(#arrow)" class="flow"/>
+          <line x1="475" y1="150" x2="525" y2="150" stroke="url(#flowGrad)" stroke-width="2.5" stroke-dasharray="6 5" marker-end="url(#arrow)" class="flow"/>
+          <line x1="995" y1="150" x2="1050" y2="150" stroke="url(#flowGrad)" stroke-width="2.5" stroke-dasharray="6 5" marker-end="url(#arrow)" class="flow"/>
+
+          <!-- SENSING -->
+          <text x="105" y="72" text-anchor="middle" fill="#5c6c82" font-size="11" letter-spacing="2" class="mono-t">SENSING</text>
+          <rect x="10" y="82" width="195" height="140" rx="12" fill="none" stroke="#1e2b3d" stroke-dasharray="3 4"/>
+          <rect x="24" y="100" width="167" height="46" rx="8" fill="#101827" stroke="#22d3ee" stroke-opacity=".5"/>
+          <text x="107" y="119" text-anchor="middle" fill="#e6edf5" font-size="11.5" class="mono-t">kitti_loader.py</text>
+          <text x="107" y="134" text-anchor="middle" fill="#93a2b8" font-size="9.5">real / mock .bin frames</text>
+          <rect x="24" y="156" width="167" height="52" rx="8" fill="#101827" stroke="#22d3ee" stroke-opacity=".5"/>
+          <text x="107" y="176" text-anchor="middle" fill="#e6edf5" font-size="10.8" class="mono-t">synthetic_lidar_data.py</text>
+          <text x="107" y="190" text-anchor="middle" fill="#e6edf5" font-size="10.8" class="mono-t">driving_sequence.py</text>
+
+          <!-- PERCEPTION -->
+          <text x="365" y="62" text-anchor="middle" fill="#5c6c82" font-size="11" letter-spacing="2" class="mono-t">PERCEPTION (SNN)</text>
+          <rect x="255" y="72" width="220" height="160" rx="12" fill="none" stroke="#1e2b3d" stroke-dasharray="3 4"/>
+          <rect x="270" y="90" width="190" height="58" rx="8" fill="#101827" stroke="#a78bfa" stroke-opacity=".6"/>
+          <text x="365" y="112" text-anchor="middle" fill="#e6edf5" font-size="11.5" class="mono-t">SpikingPointNet</text>
+          <text x="365" y="128" text-anchor="middle" fill="#93a2b8" font-size="9.5">beta=0.9 · num_steps=10</text>
+          <line x1="365" y1="148" x2="365" y2="170" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrow)"/>
+          <rect x="270" y="172" width="190" height="46" rx="8" fill="#101827" stroke="#a78bfa" stroke-opacity=".3"/>
+          <text x="365" y="192" text-anchor="middle" fill="#e6edf5" font-size="10.8" class="mono-t">snn_weights.pth</text>
+          <text x="365" y="206" text-anchor="middle" fill="#93a2b8" font-size="9.5">checkpoint (trained)</text>
+
+          <!-- GRID ENGINE -->
+          <text x="760" y="42" text-anchor="middle" fill="#5c6c82" font-size="11" letter-spacing="2" class="mono-t">VARIABLE-RESOLUTION 2.5D GRID ENGINE</text>
+          <rect x="525" y="52" width="470" height="210" rx="12" fill="rgba(34,211,238,0.03)" stroke="#22d3ee" stroke-opacity=".35"/>
+
+          <g class="mono-t" font-size="9.6" fill="#e6edf5">
+            <rect x="540" y="120" width="80" height="54" rx="7" fill="#0d1320" stroke="#2dd4bf"/>
+            <text x="580" y="142" text-anchor="middle">radial_</text><text x="580" y="154" text-anchor="middle">filter.py</text>
+            <line x1="620" y1="147" x2="640" y2="147" stroke="#2dd4bf" marker-end="url(#arrow)"/>
+
+            <rect x="640" y="120" width="80" height="54" rx="7" fill="#0d1320" stroke="#2dd4bf"/>
+            <text x="680" y="147" text-anchor="middle">grid.py</text>
+            <line x1="720" y1="147" x2="740" y2="147" stroke="#2dd4bf" marker-end="url(#arrow)"/>
+
+            <rect x="740" y="120" width="86" height="54" rx="7" fill="#0d1320" stroke="#2dd4bf"/>
+            <text x="783" y="142" text-anchor="middle">aggregate.</text><text x="783" y="154" text-anchor="middle">py</text>
+            <line x1="826" y1="147" x2="846" y2="147" stroke="#2dd4bf" marker-end="url(#arrow)"/>
+
+            <rect x="846" y="120" width="86" height="54" rx="7" fill="#0d1320" stroke="#2dd4bf"/>
+            <text x="889" y="140" text-anchor="middle">grid_</text><text x="889" y="152" text-anchor="middle">state.py</text>
+            <line x1="932" y1="147" x2="948" y2="147" stroke="#2dd4bf" marker-end="url(#arrow)"/>
+          </g>
+
+          <rect x="948" y="112" width="66" height="70" rx="8" fill="#12202b" stroke="#34d399"/>
+          <text x="981" y="140" text-anchor="middle" fill="#e6edf5" font-size="9.6" class="mono-t">handoff.</text>
+          <text x="981" y="152" text-anchor="middle" fill="#e6edf5" font-size="9.6" class="mono-t">py</text>
+          <text x="981" y="166" text-anchor="middle" fill="#34d399" font-size="8.4" class="mono-t">fixed API</text>
+
+          <text x="760" y="244" text-anchor="middle" fill="#93a2b8" font-size="10.2" class="mono-t">
+            SUBDIV_FACTOR=10 · INNER_RADIUS=10m · OUTER_RADIUS=100m · MAX_CELLS=200,000
+          </text>
+
+          <!-- CONSUMERS -->
+          <text x="1132" y="72" text-anchor="middle" fill="#5c6c82" font-size="11" letter-spacing="2" class="mono-t">CONSUMERS</text>
+          <rect x="1050" y="82" width="165" height="180" rx="12" fill="none" stroke="#1e2b3d" stroke-dasharray="3 4"/>
+          <rect x="1063" y="98" width="139" height="42" rx="7" fill="#101827" stroke="#f472b6" stroke-opacity=".5"/>
+          <text x="1132" y="123" text-anchor="middle" fill="#e6edf5" font-size="9.6" class="mono-t">dashboard_pro.py</text>
+          <rect x="1063" y="148" width="139" height="42" rx="7" fill="#101827" stroke="#f472b6" stroke-opacity=".5"/>
+          <text x="1132" y="173" text-anchor="middle" fill="#e6edf5" font-size="9.6" class="mono-t">dashboard_driving.py</text>
+          <rect x="1063" y="198" width="139" height="42" rx="7" fill="#101827" stroke="#fbbf24" stroke-opacity=".5"/>
+          <text x="1132" y="223" text-anchor="middle" fill="#e6edf5" font-size="9.6" class="mono-t">profiler.py</text>
+        </svg>
+      </div>
+      <div class="diagram-caption reveal">Fixed contract: <code style="color:#e6edf5">generate_2_5d_grid(points, labels, spikes)</code> — the only thing every module downstream depends on.</div>
+    </section>
+
+    <!-- ============ WORKFLOW ============ -->
+    <section id="workflow">
+      <div class="eyebrow reveal">02 — Runtime Behavior</div>
+      <h2 class="reveal">Per-Frame Workflow</h2>
+      <p class="section-tag reveal">
+        What happens on every single frame — from raw points to a rendered dashboard.
+        The branch in the middle is the whole point of the module: <b style="color:var(--text)">a cell
+        only recomputes when it actually spiked this frame.</b>
+      </p>
+
+      <div class="diagram-wrap reveal" style="max-width:760px; margin:0 auto;">
+        <svg viewBox="0 0 700 900" width="100%" role="img" aria-label="Per-frame workflow diagram">
+          <defs>
+            <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#93a2b8"/>
+            </marker>
+          </defs>
+
+          <!-- connecting spine -->
+          <line x1="350" y1="55" x2="350" y2="490" stroke="#1e2b3d" stroke-width="2"/>
+
+          <g font-size="12" font-family="ui-monospace, monospace">
+            <rect x="130" y="16" width="440" height="46" rx="10" fill="#101827" stroke="#22d3ee" stroke-opacity=".5"/>
+            <text x="350" y="44" text-anchor="middle" fill="#e6edf5">1 · Source emits points (N,4) float32</text>
+            <line x1="350" y1="62" x2="350" y2="86" stroke="#93a2b8" marker-end="url(#arrow2)"/>
+
+            <rect x="130" y="88" width="440" height="46" rx="10" fill="#101827" stroke="#a78bfa" stroke-opacity=".5"/>
+            <text x="350" y="116" text-anchor="middle" fill="#e6edf5">2 · SpikingPointNet runs num_steps LIF ticks</text>
+            <line x1="350" y1="134" x2="350" y2="158" stroke="#93a2b8" marker-end="url(#arrow2)"/>
+
+            <rect x="130" y="160" width="440" height="46" rx="10" fill="#101827" stroke="#a78bfa" stroke-opacity=".5"/>
+            <text x="350" y="188" text-anchor="middle" fill="#e6edf5">3 · labels = argmax(spikes) · spikes = spike count</text>
+            <line x1="350" y1="206" x2="350" y2="230" stroke="#93a2b8" marker-end="url(#arrow2)"/>
+
+            <rect x="130" y="232" width="440" height="46" rx="10" fill="#101827" stroke="#34d399" stroke-opacity=".5"/>
+            <text x="350" y="260" text-anchor="middle" fill="#e6edf5">4 · validate_inputs → validate_labels → coerce_spikes</text>
+            <line x1="350" y1="278" x2="350" y2="302" stroke="#93a2b8" marker-end="url(#arrow2)"/>
+
+            <rect x="130" y="304" width="440" height="46" rx="10" fill="#101827" stroke="#22d3ee" stroke-opacity=".5"/>
+            <text x="350" y="332" text-anchor="middle" fill="#e6edf5">5 · prefilter_mask → assign_cells()</text>
+            <line x1="350" y1="350" x2="350" y2="374" stroke="#93a2b8" marker-end="url(#arrow2)"/>
+
+            <rect x="130" y="376" width="440" height="46" rx="10" fill="#101827" stroke="#22d3ee" stroke-opacity=".5"/>
+            <text x="350" y="404" text-anchor="middle" fill="#e6edf5">6 · aggregate_cells() → elevation / variance / class / spike_sum</text>
+          </g>
+
+          <line x1="350" y1="422" x2="350" y2="450" stroke="#93a2b8" marker-end="url(#arrow2)"/>
+
+          <!-- decision diamond -->
+          <polygon points="350,452 500,540 350,628 200,540" fill="rgba(251,191,36,0.07)" stroke="#fbbf24" stroke-width="1.6"/>
+          <text x="350" y="530" text-anchor="middle" fill="#fde9b6" font-size="12" font-weight="600">spike_sum &gt; 0</text>
+          <text x="350" y="548" text-anchor="middle" fill="#fde9b6" font-size="12" font-weight="600">OR first time seen?</text>
+
+          <line x1="200" y1="540" x2="70" y2="620" stroke="#34d399" stroke-width="1.8" marker-end="url(#arrow2)"/>
+          <text x="80" y="600" fill="#34d399" font-size="11.5" font-family="ui-monospace, monospace">YES</text>
+          <rect x="10" y="622" width="220" height="58" rx="10" fill="rgba(52,211,153,0.06)" stroke="#34d399"/>
+          <text x="120" y="646" text-anchor="middle" fill="#e6edf5" font-size="11" font-family="ui-monospace, monospace">Overwrite cached</text>
+          <text x="120" y="662" text-anchor="middle" fill="#e6edf5" font-size="11" font-family="ui-monospace, monospace">CellRecord</text>
+
+          <line x1="500" y1="540" x2="630" y2="620" stroke="#f472b6" stroke-width="1.8" marker-end="url(#arrow2)"/>
+          <text x="600" y="600" fill="#f472b6" font-size="11.5" font-family="ui-monospace, monospace">NO</text>
+          <rect x="470" y="622" width="220" height="58" rx="10" fill="rgba(244,114,182,0.06)" stroke="#f472b6"/>
+          <text x="580" y="640" text-anchor="middle" fill="#e6edf5" font-size="11" font-family="ui-monospace, monospace">Keep cached value,</text>
+          <text x="580" y="656" text-anchor="middle" fill="#e6edf5" font-size="11" font-family="ui-monospace, monospace">refresh last_touched_frame</text>
+
+          <line x1="120" y1="680" x2="350" y2="716" stroke="#93a2b8" stroke-width="1.4"/>
+          <line x1="580" y1="680" x2="350" y2="716" stroke="#93a2b8" stroke-width="1.4" marker-end="url(#arrow2)"/>
+
+          <g font-size="12" font-family="ui-monospace, monospace">
+            <rect x="130" y="718" width="440" height="46" rx="10" fill="#101827" stroke="#22d3ee" stroke-opacity=".5"/>
+            <text x="350" y="746" text-anchor="middle" fill="#e6edf5">7 · Commit frame · move_to_end() for LRU order</text>
+            <line x1="350" y1="764" x2="350" y2="788" stroke="#93a2b8" marker-end="url(#arrow2)"/>
+
+            <rect x="130" y="790" width="440" height="46" rx="10" fill="#101827" stroke="#fbbf24" stroke-opacity=".5"/>
+            <text x="350" y="818" text-anchor="middle" fill="#e6edf5">8 · Evict LRU cells if cache &gt; 200,000</text>
+            <line x1="350" y1="836" x2="350" y2="860" stroke="#93a2b8" marker-end="url(#arrow2)"/>
+
+            <rect x="130" y="862" width="440" height="34" rx="10" fill="#101827" stroke="#a78bfa" stroke-opacity=".5"/>
+            <text x="350" y="884" text-anchor="middle" fill="#e6edf5">9 · snapshot() → dashboard / profiler</text>
+          </g>
+        </svg>
+      </div>
+
+      <div class="callout reveal">
+        <b>Why this matters:</b> on a 40-frame driving sequence, only the cells under
+        a moving pedestrian or a newly-entered pole ever recompute — everything else
+        is served straight from cache. This is verified directly by
+        <code>build_moving_sequence()</code> in <code>synthetic_lidar_data.py</code>
+        and <code>test_grid_state.py</code>.
+      </div>
+    </section>
+
+    <!-- ============ SNN ============ -->
+    <section id="snn">
+      <div class="eyebrow reveal">03 — Perception</div>
+      <h2 class="reveal">Spiking Neural Network</h2>
+      <p class="section-tag reveal">
+        <code>spiking_model.py</code> — three <code>Conv1d</code> layers, each followed
+        by a Leaky-Integrate-and-Fire (<code>snn.Leaky</code>) layer with a fast-sigmoid
+        surrogate gradient. Only neurons that cross threshold ever fire — that sparsity
+        is the entire energy argument.
+      </p>
+
+      <div class="diagram-wrap reveal">
+        <svg viewBox="0 0 900 380" width="100%" role="img" aria-label="Spiking neural network diagram">
+          <defs>
+            <style>
+              .spk{
+                animation:spike 2.4s ease-in-out infinite;
+                transform-box:fill-box; transform-origin:center;
+              }
+              @keyframes spike{
+                0%,100%{ opacity:.5; transform:scale(1); }
+                50%{ opacity:1; transform:scale(1.4); }
+              }
+            </style>
+          </defs>
+
+          <!-- connecting lines (subtle) -->
+          <g stroke="#22d3ee" stroke-opacity="0.08">
+            <!-- input -> layer1 -->
+            <g id="l1lines"></g>
+          </g>
+
+          <!-- INPUT CHANNELS -->
+          <text x="90" y="40" text-anchor="middle" fill="#5c6c82" font-size="11" letter-spacing="1.5" class="mono-t">INPUT (4ch)</text>
+          <circle cx="90" cy="90" r="7" fill="#22d3ee"/><text x="112" y="94" fill="#93a2b8" font-size="11" class="mono-t">X</text>
+          <circle cx="90" cy="150" r="7" fill="#22d3ee"/><text x="112" y="154" fill="#93a2b8" font-size="11" class="mono-t">Y</text>
+          <circle cx="90" cy="210" r="7" fill="#22d3ee"/><text x="112" y="214" fill="#93a2b8" font-size="11" class="mono-t">Z</text>
+          <circle cx="90" cy="270" r="7" fill="#22d3ee"/><text x="112" y="274" fill="#93a2b8" font-size="11" class="mono-t">Intensity</text>
+
+          <!-- LAYER 1 -->
+          <text x="320" y="40" text-anchor="middle" fill="#5c6c82" font-size="11" letter-spacing="1.5" class="mono-t">CONV1 + LIF1 · 64u</text>
+          <g id="layer1" fill="#a78bfa" color="#a78bfa">
+            <circle class="spk" cx="320" cy="65"  r="6" style="animation-delay:0.0s"/>
+            <circle class="spk" cx="320" cy="98"  r="6" style="animation-delay:0.3s"/>
+            <circle class="spk" cx="320" cy="131" r="6" style="animation-delay:0.6s"/>
+            <circle class="spk" cx="320" cy="164" r="6" style="animation-delay:0.9s"/>
+            <circle class="spk" cx="320" cy="197" r="6" style="animation-delay:1.2s"/>
+            <circle class="spk" cx="320" cy="230" r="6" style="animation-delay:1.5s"/>
+            <circle class="spk" cx="320" cy="263" r="6" style="animation-delay:1.8s"/>
+            <circle class="spk" cx="320" cy="296" r="6" style="animation-delay:2.1s"/>
+          </g>
+          <text x="320" y="326" text-anchor="middle" fill="#5c6c82" font-size="9.5">+56 more</text>
+
+          <!-- LAYER 2 -->
+          <text x="560" y="40" text-anchor="middle" fill="#5c6c82" font-size="11" letter-spacing="1.5" class="mono-t">CONV2 + LIF2 · 128u</text>
+          <g id="layer2" fill="#22d3ee" color="#22d3ee">
+            <circle class="spk" cx="560" cy="60"  r="6" style="animation-delay:0.15s"/>
+            <circle class="spk" cx="560" cy="92"  r="6" style="animation-delay:0.45s"/>
+            <circle class="spk" cx="560" cy="124" r="6" style="animation-delay:0.75s"/>
+            <circle class="spk" cx="560" cy="156" r="6" style="animation-delay:1.05s"/>
+            <circle class="spk" cx="560" cy="188" r="6" style="animation-delay:1.35s"/>
+            <circle class="spk" cx="560" cy="220" r="6" style="animation-delay:1.65s"/>
+            <circle class="spk" cx="560" cy="252" r="6" style="animation-delay:1.95s"/>
+            <circle class="spk" cx="560" cy="284" r="6" style="animation-delay:2.25s"/>
+            <circle class="spk" cx="560" cy="316" r="6" style="animation-delay:2.55s"/>
+          </g>
+          <text x="560" y="342" text-anchor="middle" fill="#5c6c82" font-size="9.5">+119 more</text>
+
+          <!-- OUTPUT -->
+          <text x="800" y="40" text-anchor="middle" fill="#5c6c82" font-size="11" letter-spacing="1.5" class="mono-t">CONV3 + LIF3 · 3 classes</text>
+          <circle class="spk" cx="800" cy="120" r="8" fill="#34d399" color="#34d399" style="animation-delay:0.2s"/>
+          <text x="822" y="124" fill="#e6edf5" font-size="11.5" class="mono-t">0 · Drivable</text>
+          <circle class="spk" cx="800" cy="190" r="8" fill="#fbbf24" color="#fbbf24" style="animation-delay:0.9s"/>
+          <text x="822" y="194" fill="#e6edf5" font-size="11.5" class="mono-t">1 · Static Obstacle</text>
+          <circle class="spk" cx="800" cy="260" r="8" fill="#f472b6" color="#f472b6" style="animation-delay:1.6s"/>
+          <text x="822" y="264" fill="#e6edf5" font-size="11.5" class="mono-t">2 · Dynamic Object</text>
+
+          <!-- fan lines input->l1, l1->l2, l2->out (drawn last, subtle) -->
+          <g stroke="#93a2b8" stroke-opacity="0.10">
+            <line x1="97" y1="90" x2="313" y2="65"/><line x1="97" y1="90" x2="313" y2="164"/><line x1="97" y1="90" x2="313" y2="263"/>
+            <line x1="97" y1="150" x2="313" y2="98"/><line x1="97" y1="150" x2="313" y2="197"/><line x1="97" y1="150" x2="313" y2="296"/>
+            <line x1="97" y1="210" x2="313" y2="131"/><line x1="97" y1="210" x2="313" y2="230"/>
+            <line x1="97" y1="270" x2="313" y2="164"/><line x1="97" y1="270" x2="313" y2="263"/>
+          </g>
+          <g stroke="#93a2b8" stroke-opacity="0.08">
+            <line x1="326" y1="65" x2="553" y2="60"/><line x1="326" y1="98" x2="553" y2="124"/>
+            <line x1="326" y1="131" x2="553" y2="188"/><line x1="326" y1="164" x2="553" y2="252"/>
+            <line x1="326" y1="197" x2="553" y2="316"/><line x1="326" y1="230" x2="553" y2="92"/>
+            <line x1="326" y1="263" x2="553" y2="156"/><line x1="326" y1="296" x2="553" y2="220"/>
+          </g>
+          <g stroke="#93a2b8" stroke-opacity="0.12">
+            <line x1="566" y1="60" x2="792" y2="120"/><line x1="566" y1="124" x2="792" y2="120"/>
+            <line x1="566" y1="188" x2="792" y2="190"/><line x1="566" y1="252" x2="792" y2="190"/>
+            <line x1="566" y1="284" x2="792" y2="260"/><line x1="566" y1="316" x2="792" y2="260"/>
+          </g>
+        </svg>
+      </div>
+      <div class="diagram-caption reveal">Pulsing nodes = spikes over the temporal loop (<code>num_steps</code> forward passes per frame), not a literal firing trace.</div>
+
+      <div class="grid grid-2" style="margin-top:30px;">
+        <div class="card reveal">
+          <span class="pill">ARCHITECTURE</span>
+          <h3>Why sparse fire &#8594; sparse compute</h3>
+          <p>Each <code>Leaky</code> layer only forward-propagates a nonzero signal when
+          its membrane potential crosses <code>threshold=0.5</code>. The grid engine's
+          entire event-driven cache design in <code>grid_state.py</code> exists to
+          exploit exactly this: silent points cost nothing downstream either.</p>
+          <ul>
+            <li><code>beta=0.9</code> — membrane leak/decay factor</li>
+            <li><code>num_steps=10</code> — temporal integration window</li>
+            <li><code>surrogate.fast_sigmoid()</code> — gradient for backprop through spikes</li>
+          </ul>
+        </div>
+        <div class="card reveal">
+          <span class="pill">MAC vs. AC — profiler.py</span>
+          <h3>Energy per operation</h3>
+          <p>A dense (non-spiking) network pays a Multiply-Accumulate cost on every
+          neuron, every step. An SNN only pays the cheap Accumulate cost — and only
+          when a neuron actually spikes.</p>
+          <div style="margin-top:14px;">
+            <div style="display:flex; justify-content:space-between; font-size:11.5px; color:var(--text-dim); margin-bottom:4px;">
+              <span class="mono">MAC_ENERGY_PJ</span><span class="mono" style="color:#f472b6">4.6 pJ</span>
+            </div>
+            <div style="height:10px; background:#0d1320; border-radius:6px; overflow:hidden;">
+              <div style="height:100%; width:100%; background:linear-gradient(90deg,#f472b6,#fb7185);"></div>
+            </div>
+            <div style="display:flex; justify-content:space-between; font-size:11.5px; color:var(--text-dim); margin:10px 0 4px;">
+              <span class="mono">AC_ENERGY_PJ</span><span class="mono" style="color:#34d399">0.9 pJ</span>
+            </div>
+            <div style="height:10px; background:#0d1320; border-radius:6px; overflow:hidden;">
+              <div style="height:100%; width:19.6%; background:linear-gradient(90deg,#34d399,#22d3ee);"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ GRID ENGINE ============ -->
+    <section id="grid-engine">
+      <div class="eyebrow reveal">04 — Core Module</div>
+      <h2 class="reveal">Variable-Resolution Grid Engine</h2>
+      <p class="section-tag reveal">
+        Not a textbook 2×2 recursive quadtree — halving 50cm repeatedly never lands
+        exactly on 5cm. Instead: a base 50cm grid, and any parent cell whose
+        <b style="color:var(--text)">center</b> falls within 10m gets subdivided into
+        a fixed 10×10 array of 5cm sub-cells, aligned to one shared origin.
+      </p>
+
+      <div class="grid grid-2" style="align-items:center;">
+        <div class="diagram-wrap reveal">
+          <svg viewBox="0 0 380 320" width="100%" role="img" aria-label="Grid subdivision diagram">
+            <defs>
+              <pattern id="subgrid" width="24" height="24" patternUnits="userSpaceOnUse">
+                <rect width="24" height="24" fill="none" stroke="#2dd4bf" stroke-width="0.6" stroke-opacity="0.55"/>
+              </pattern>
+            </defs>
+            <text x="190" y="26" text-anchor="middle" fill="#93a2b8" font-size="11.5" class="mono-t">50cm parent cell</text>
+            <rect x="70" y="38" width="240" height="240" fill="url(#subgrid)" stroke="#22d3ee" stroke-width="2.5"/>
+            <rect x="70" y="38" width="24" height="24" fill="rgba(167,139,250,0.35)" stroke="#a78bfa" stroke-width="1.5"/>
+            <line x1="94" y1="50" x2="330" y2="50" stroke="#a78bfa" stroke-width="1" stroke-dasharray="2 3"/>
+            <text x="336" y="54" fill="#a78bfa" font-size="10.5" class="mono-t">5cm</text>
+            <text x="190" y="300" text-anchor="middle" fill="#93a2b8" font-size="11.5" class="mono-t">10 × 10 = 100 sub-cells</text>
+          </svg>
+        </div>
+        <div class="reveal" style="display:flex; flex-direction:column; gap:14px;">
+          <div class="callout" style="margin-top:0;">
+            <b>Alignment guarantee:</b> a sub-cell index is always (1) parent index
+            from the shared origin, (2) local offset within that parent's own
+            <code>[0, 0.5)</code> range, (3) floor-divided by 0.05 — never an
+            independently-computed fine-grid origin. That's what gives
+            <code>generate_boundary_stress_ring()</code> a flat, seamless render at
+            exactly r=10m.
+          </div>
+          <div class="callout" style="margin-top:0; border-color:var(--violet); background:rgba(167,139,250,0.06);">
+            <b>Subdivision is decided per parent cell</b>, by that cell's center
+            distance — never per point — so a single cell can never end up
+            half-subdivided.
+          </div>
+        </div>
+      </div>
+
+      <div class="grid grid-5" style="margin-top:34px;">
+        <div class="card reveal">
+          <span class="pill">grid.py</span>
+          <h3><code>VariableResolutionGrid</code></h3>
+          <p>Assigns every point a parent + sub-cell index via floor-division from one shared origin.</p>
+        </div>
+        <div class="card reveal">
+          <span class="pill">aggregate.py</span>
+          <h3><code>aggregate_cells()</code></h3>
+          <p>Vectorized elevation max/variance + majority class per cell, no Python point loop.</p>
+        </div>
+        <div class="card reveal">
+          <span class="pill">radial_filter.py</span>
+          <h3><code>prefilter_mask()</code></h3>
+          <p>Gates points to <code>r ≤ 100m</code> before they ever reach the grid.</p>
+        </div>
+        <div class="card reveal">
+          <span class="pill">grid_state.py</span>
+          <h3><code>GridState</code></h3>
+          <p>Event-driven cache: spike &gt; 0 or first-seen to update, LRU-evicted past 200,000 cells.</p>
+        </div>
+        <div class="card reveal">
+          <span class="pill">handoff.py</span>
+          <h3><code>generate_2_5d_grid()</code></h3>
+          <p>The single fixed function every other module in the pipeline integrates against.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ DATA CONTRACT ============ -->
+    <section id="data-contract" class="narrow">
+      <div class="eyebrow reveal">05 — Interface</div>
+      <h2 class="reveal">Data Contract</h2>
+      <p class="section-tag reveal">Fixed between the SNN and the grid engine — negotiated once, treated as external, never silently changed.</p>
+
+      <div class="diagram-wrap reveal" style="padding:0; overflow:hidden;">
+        <table>
+          <tr><th>Field</th><th>Shape</th><th>dtype</th><th>Enforced where</th></tr>
+          <tr>
+            <td><code>points</code></td>
+            <td>(N, 4) — X,Y,Z,Intensity</td>
+            <td><code>float32</code></td>
+            <td>Shape checked by <code>validate_inputs()</code>; dtype not hard-enforced</td>
+          </tr>
+          <tr>
+            <td><code>labels</code></td>
+            <td>(N,) — {0,1,2}</td>
+            <td><code>int64</code>/<code>uint8</code></td>
+            <td>Shape by <code>validate_inputs()</code>; range by <code>validate_labels()</code> (raises)</td>
+          </tr>
+          <tr>
+            <td><code>spikes</code></td>
+            <td>(N,) — spike <b style="color:#e6edf5">count</b>, not a flag</td>
+            <td><code>uint8</code>/<code>int32</code></td>
+            <td>Shape checked; dtype coerced via <code>coerce_spikes()</code>, gate is always <code>&gt; 0</code></td>
+          </tr>
+        </table>
+      </div>
+
+      <div class="grid grid-3" style="margin-top:22px;">
+        <div class="card reveal"><h3>Ego-centric frame</h3><p>UGV is always at <code>(0,0,0)</code> — never a world-frame offset.</p></div>
+        <div class="card reveal"><h3>Z guard</h3><p>NaN Z raises <code>ValueError</code> naming the point indices. Inf is <b>not</b> checked.</p></div>
+        <div class="card reveal"><h3>Class IDs</h3><p><code>0</code> drivable · <code>1</code> static · <code>2</code> dynamic — fixed, never renumbered.</p></div>
+      </div>
+    </section>
+
+    <!-- ============ MODULE REFERENCE ============ -->
+    <section id="modules">
+      <div class="eyebrow reveal">06 — Everything Else</div>
+      <h2 class="reveal">Module Reference</h2>
+      <p class="section-tag reveal">Data generation, training, and the two live dashboards.</p>
+
+      <h3 class="reveal" style="margin-top:6px; color:var(--text-dim); text-transform:uppercase; font-size:11.5px; letter-spacing:.08em;">Synthetic Data</h3>
+      <div class="grid grid-2" style="margin-bottom:28px;">
+        <div class="card reveal">
+          <h3><code>synthetic_lidar_data.py</code></h3>
+          <p>Ground plane, poles, dynamic clusters, and the critical
+          <code>generate_boundary_stress_ring()</code> — a dense ring at exactly
+          r=10m that stress-tests the 5cm/50cm seam. Plus
+          <code>build_moving_sequence()</code> for event-driven verification.</p>
+        </div>
+        <div class="card reveal">
+          <h3><code>driving_sequence.py</code></h3>
+          <p>Scripted 40-frame narrative: 5 static poles, a crossing pedestrian, an
+          overtaking car — all transformed into ego-centric coordinates each frame.</p>
+        </div>
+      </div>
+
+      <h3 class="reveal" style="color:var(--text-dim); text-transform:uppercase; font-size:11.5px; letter-spacing:.08em;">SNN, Training & Ingestion</h3>
+      <div class="grid grid-3" style="margin-bottom:28px;">
+        <div class="card reveal">
+          <h3><code>kitti_loader.py</code></h3>
+          <p>Voxel downsample → range-weighted farthest-point sampling
+          (<code>1 + 0.05×range</code>) → temporal delta-intensity encoding.</p>
+        </div>
+        <div class="card reveal">
+          <h3><code>synthetic_train_loop_v5.py</code></h3>
+          <p>Dual validation (balanced + realistic) after v4's aggressive weights
+          collapsed 96.2% of predictions to "Static." Checkpoints on realistic
+          min-class accuracy.</p>
+        </div>
+        <div class="card reveal">
+          <h3><code>integration_pipeline.py</code></h3>
+          <p>End-to-end demo: loader → SNN → <code>generate_2_5d_grid</code>, printing
+          FPS and active-cell count per frame.</p>
+        </div>
+      </div>
+
+      <h3 class="reveal" style="color:var(--text-dim); text-transform:uppercase; font-size:11.5px; letter-spacing:.08em;">Dashboards</h3>
+      <div class="grid grid-2">
+        <div class="card reveal">
+          <span class="pill">Nocturne theme</span>
+          <h3><code>dashboard_pro.py</code></h3>
+          <p>Single-frame, click-to-generate demo. Custom HTML telemetry/objects
+          panels, polar grid + HUD overlays, DBSCAN clustering. Checkpoint path is
+          CWD-relative.</p>
+        </div>
+        <div class="card reveal">
+          <span class="pill">Animated sequence</span>
+          <h3><code>dashboard_driving.py</code></h3>
+          <p>40-frame driving demo. Advances exactly one frame per rerun
+          (<code>st.rerun()</code>) so it survives a WebSocket reconnect. Caps
+          rendered drivable points at 6,000 for perf.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ TESTS ============ -->
+    <section id="tests" class="narrow">
+      <div class="eyebrow reveal">07 — Verification</div>
+      <h2 class="reveal">Test Coverage</h2>
+      <p class="section-tag reveal">9 files, all pytest-discoverable. <code>py -m pytest -v</code> or run individually.</p>
+
+      <div class="diagram-wrap reveal" style="padding:0;">
+        <table>
+          <tr><th>File</th><th>Covers</th></tr>
+          <tr><td><code>test_grid.py</code></td><td>Subdivision factor, boundary-ring containment, out-of-range points</td></tr>
+          <tr><td><code>test_aggregate.py</code></td><td>Elevation/variance/class correctness, NaN-Z guard, tie-break rules</td></tr>
+          <tr><td><code>test_radial_filter.py</code></td><td>Inner/outer split bounds</td></tr>
+          <tr><td><code>test_grid_state.py</code></td><td>Event-driven updates, cold-start baseline, LRU eviction</td></tr>
+          <tr><td><code>test_handoff.py</code></td><td>Accumulation across calls, spike coercion, input validation order</td></tr>
+          <tr><td><code>test_integration.py</code></td><td>Per-frame timing budget (&ge;8/10 frames &lt;100ms)</td></tr>
+          <tr><td><code>test_packed_keys.py</code></td><td>Packed-int64 dedup parity vs. reference implementation</td></tr>
+          <tr><td><code>test_stress.py</code></td><td>200+ validation-fuzzing cases, adversarial churn, long-horizon growth</td></tr>
+          <tr><td><code>test_dashboard_driving.py</code></td><td>Frame-index semantics, rerun survival, path-leak checks</td></tr>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ NOTES ============ -->
+    <section id="notes" class="narrow">
+      <div class="eyebrow reveal">08 — Notes</div>
+      <h2 class="reveal">Known Gaps &amp; Reference</h2>
+      <div class="grid grid-2" style="margin-top:10px;">
+        <div class="card reveal">
+          <ul style="margin-left:0; list-style:none;">
+            <li style="margin-bottom:10px;">⚠️ Inf-in-Z is not guarded — only NaN raises.</li>
+            <li style="margin-bottom:10px;">⚠️ README's dependency list predates <code>requirements.txt</code>.</li>
+            <li style="margin-bottom:10px;">⚠️ <code>DESIGN.md</code> / <code>DESIGN-dash_pro.md</code> describe an earlier dashboard state.</li>
+            <li>⚠️ Numba is named in the tech stack but unused — perf work is plain NumPy.</li>
+          </ul>
+        </div>
+        <div class="card reveal">
+          <p>This page is a visual companion to <code>DOCUMENTATION.md</code>, which
+          remains the authoritative, text-searchable reference — including full
+          function signatures, the module-by-module breakdown, and
+          <code>Reports/AUDIT-v2.md</code>'s fix history.</p>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      AVRLM — Adaptive Variable Resolution 2.5D LiDAR Mapping · Generated as a presentation companion to DOCUMENTATION.md
+    </footer>
+
+  </main>
+</div>
+
+<script>
+  // reveal-on-scroll
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, { threshold: 0.12 });
+  document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+
+  // active nav link on scroll
+  const links = Array.from(document.querySelectorAll('#sidenav a'));
+  const sections = links.map(a => document.querySelector(a.getAttribute('href')));
+  const spy = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      const idx = sections.indexOf(entry.target);
+      if (idx === -1) return;
+      if (entry.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        links[idx].classList.add('active');
+      }
+    });
+  }, { rootMargin: '-40% 0px -50% 0px', threshold: 0 });
+  sections.forEach(s => s && spy.observe(s));
+</script>
+
+</body>
+</html>

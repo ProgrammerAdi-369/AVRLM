@@ -6,12 +6,16 @@ import torch
 import time
 import os
 import math
+import sys
 
+
+sys.path.append(os.path.join(os.path.dirname(__file__), 'AVRLM'))
 from spiking_model import SpikingPointNet
 from handoff import generate_2_5d_grid, memory_metrics
 from grid_state import GridState
 from profiler import EdgeProfiler
 from synthetic_lidar_data import build_scene
+
 
 try:
     from sklearn.cluster import DBSCAN
@@ -19,7 +23,9 @@ try:
 except ImportError:
     HAS_SKLEARN = False
 
+
 st.set_page_config(page_title="DRDO Tactical UGV Perception", layout="wide")
+
 
 # ---------------------------------------------------------------------------
 # Nocturne theme — global CSS. Palette resolved to literal hex/rgba values
@@ -31,7 +37,6 @@ st.markdown("""
 [data-testid="stHeader"] {
     display: none;
 }
-
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
 <style>
@@ -42,6 +47,7 @@ st.markdown("""
   --nred:#ff5a6e; --nline:rgba(233,233,237,.09);
 }
 @keyframes noct-sweep {
+
   0% { transform: translateY(0); opacity: 0; }
   8% { opacity: .5; }
   92% { opacity: .5; }
@@ -88,9 +94,11 @@ div[data-testid="stPlotlyChart"]::after{
 </style>
 """, unsafe_allow_html=True)
 
+
 CHECKPOINT_PATH = "snn_weights.pth"
 NUM_POINTS = 8192
 MAX_RANGE = 100.0
+
 
 CLASS_NAMES = {0: "Drivable", 1: "Static Obstacle", 2: "Dynamic Threat"}
 CLASS_COLOR = {
@@ -100,7 +108,9 @@ CLASS_COLOR = {
 }
 BOX_COLOR = {"Static Obstacle": "rgb(0,200,255)", "Dynamic Threat": "rgb(255,60,80)"}
 
+
 profiler = EdgeProfiler()
+
 
 
 def pill(text, warn=False):
@@ -115,6 +125,7 @@ def pill(text, warn=False):
     )
 
 
+
 @st.cache_resource
 def load_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -125,8 +136,10 @@ def load_model():
     return ai_model, device
 
 
+
 ai_model, device = load_model()
 checkpoint_ok = os.path.exists(CHECKPOINT_PATH)
+
 
 # ---------------------------------------------------------------------------
 # Sidebar
@@ -142,6 +155,7 @@ st.sidebar.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+
 st.sidebar.markdown(
     '<div style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;'
     'color:rgba(233,233,237,.42);margin-top:12px">Display</div>',
@@ -150,6 +164,7 @@ st.sidebar.markdown(
 show_zone_ring = st.sidebar.checkbox("10m foveation boundary", value=True, key="show_zone_ring")
 show_bboxes = st.sidebar.checkbox("3D bounding boxes", value=True, key="show_bboxes")
 show_fog = st.sidebar.checkbox("Distance fog on point cloud", value=False, key="show_fog")
+
 
 st.sidebar.markdown(
     '<div style="height:1px;margin:14px 0;background:linear-gradient(90deg,transparent,'
@@ -161,6 +176,7 @@ st.sidebar.markdown(
     'color:rgba(233,233,237,.42)">Clustering</div>',
     unsafe_allow_html=True,
 )
+
 
 _eps_now = st.session_state.get("cluster_eps", 1.0)
 st.sidebar.markdown(
@@ -179,6 +195,7 @@ st.sidebar.markdown(
     unsafe_allow_html=True,
 )
 
+
 _minpts_now = st.session_state.get("cluster_min_pts", 5)
 st.sidebar.markdown(
     f'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:10px">'
@@ -194,6 +211,7 @@ st.sidebar.markdown(
     'color:rgba(233,233,237,.32);margin-top:-10px"><span>1</span><span>15</span></div>',
     unsafe_allow_html=True,
 )
+
 
 st.sidebar.markdown(
     '<div style="height:1px;margin:14px 0;background:linear-gradient(90deg,transparent,'
@@ -226,6 +244,7 @@ st.sidebar.markdown(f"""
   Untrained weights &mdash; predictions will collapse toward one class.</div>
 """, unsafe_allow_html=True)
 
+
 # ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
@@ -252,10 +271,12 @@ with action_col:
     )
     header_clicked = st.button("Generate Scene", key="btn_header", width="stretch")
 
+
 # ---------------------------------------------------------------------------
 # Pipeline helper functions (unchanged from the pre-redesign file, except
 # add_bbox_trace's line styling — see ENHANCE-dash_pro.md §3.1)
 # ---------------------------------------------------------------------------
+
 
 
 def scene_to_tensor(points, num_points=NUM_POINTS, max_range=MAX_RANGE):
@@ -271,6 +292,7 @@ def scene_to_tensor(points, num_points=NUM_POINTS, max_range=MAX_RANGE):
     norm_tensor[:3, :] = norm_coords.T
     norm_tensor[3, :] = pts_sampled[:, 3]
     return norm_tensor, pts_sampled
+
 
 
 def cluster_objects(df, eps, min_samples):
@@ -302,6 +324,7 @@ def cluster_objects(df, eps, min_samples):
     return objects
 
 
+
 def add_bbox_trace(fig, obj, color):
     """Corner-bracket wireframe (3 short segments per corner) instead of a
     full 12-edge box — ENHANCE-dash_pro.md §3.1: 'draw corner brackets
@@ -325,6 +348,7 @@ def add_bbox_trace(fig, obj, color):
         ))
 
 
+
 def _add_polar_grid(fig):
     theta = np.linspace(0, 2 * np.pi, 100)
     for rr in (25, 50, 75):
@@ -339,6 +363,7 @@ def _add_polar_grid(fig):
             mode="lines", showlegend=False, hoverinfo="skip",
             line=dict(color="rgba(233,233,237,0.07)", width=1),
         ))
+
 
 
 def _add_legend_overlay(fig, class_counts, total):
@@ -383,6 +408,7 @@ def _add_legend_overlay(fig, class_counts, total):
         row_y -= 0.045
 
 
+
 def _add_hud_overlay(fig, raw_point_count):
     cols = [
         ("FOVEATION", "10 m · 5 cm cells"),
@@ -398,10 +424,18 @@ def _add_hud_overlay(fig, raw_point_count):
         x += 0.16
 
 
+
 # ---------------------------------------------------------------------------
 # Telemetry strip + Detected Objects rendering — shared by the pre-click and
 # post-click branches (ENHANCE-dash_pro.md §2, §6).
+#
+# CHANGE (memory-savings metric): added a 6th "Memory" telemetry card that
+# surfaces handoff.memory_metrics()['savings_ratio'] — this was already
+# being computed every run but never displayed. It directly demonstrates
+# the PS requirement: "significant reduction in memory usage compared to a
+# uniform high-resolution 3D map."
 # ---------------------------------------------------------------------------
+
 
 
 def render_telemetry_html(data):
@@ -423,6 +457,7 @@ def render_telemetry_html(data):
           <div style="margin-top:6px;font-size:10px;color:rgba(233,233,237,.35)">{caption}</div>
         </div>"""
 
+
     if data is None:
         dash = '<span style="font-size:34px;line-height:1;color:rgba(233,233,237,.3)">&mdash;</span>'
         flat_bar = '<div style="height:3px;border-radius:2px;background:rgba(233,233,237,.1)"></div>'
@@ -432,8 +467,10 @@ def render_telemetry_html(data):
             card("Sparsity", dash, flat_bar, "neuron states that never fired"),
             card("Energy saved", dash, flat_bar, "vs dense MAC baseline"),
             card("Objects", dash, flat_bar, "nearest at &mdash;"),
+            card("Memory", dash, flat_bar, "vs uniform high-res 3D map"),
         ]
-        return f'<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:11.2px;margin-bottom:22.4px">{"".join(cards)}</div>'
+        return f'<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:11.2px;margin-bottom:22.4px">{"".join(cards)}</div>'
+
 
     fps = data["fps"]
     fps_pct = min(fps / 10.0, 1.0) * 100
@@ -445,6 +482,8 @@ def render_telemetry_html(data):
     hist = data["energy_hist"]
     n_objects = data["n_objects"]
     nearest = data["nearest_dist"]
+    savings_ratio = data["savings_ratio"]
+
 
     speed_card = card(
         "Speed",
@@ -499,8 +538,19 @@ def render_telemetry_html(data):
         extra_bg="linear-gradient(180deg, rgba(255,90,110,.12), rgba(255,90,110,.04))",
         extra_shadow="0 0 0 1px rgba(255,90,110,.28)",
     )
-    cards = [speed_card, cells_card, sparsity_card, energy_card, objects_card]
-    return f'<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:11.2px;margin-bottom:22.4px">{"".join(cards)}</div>'
+    memory_bar_pct = max(0.0, 100 - min(savings_ratio, 20.0) * 5.0)
+    memory_card = card(
+        "Memory",
+        f'<span style="font-size:34px;line-height:1;letter-spacing:-.02em">{savings_ratio:.1f}</span>'
+        f'<span style="font-size:13px;color:rgba(233,233,237,.45)">&times;</span>',
+        f'<div style="height:3px;border-radius:2px;background:rgba(233,233,237,.1);position:relative">'
+        f'<div style="position:absolute;inset:0 {memory_bar_pct:.1f}% 0 0;border-radius:2px;'
+        f'background:var(--na5);box-shadow:0 0 10px -1px var(--na6)"></div></div>',
+        "vs uniform high-res 3D map",
+    )
+    cards = [speed_card, cells_card, sparsity_card, energy_card, objects_card, memory_card]
+    return f'<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:11.2px;margin-bottom:22.4px">{"".join(cards)}</div>'
+
 
 
 def render_objects_panel_html(objects, latency, foveation_radius=10.0):
@@ -535,6 +585,7 @@ def render_objects_panel_html(objects, latency, foveation_radius=10.0):
         'color:rgba(233,233,237,.5);font-size:13px">No discrete objects detected this frame.</div>'
     )
 
+
     if latency is not None:
         total = latency["sample"] + latency["infer"] + latency["grid"]
         seg = lambda s: (s / total * 100) if total else 0
@@ -557,7 +608,9 @@ def render_objects_panel_html(objects, latency, foveation_radius=10.0):
     else:
         latency_card = ""
 
+
     return objects_html + latency_card
+
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +642,7 @@ EMPTY_STATE_HTML = """
 </div>
 """
 
+
 # ---------------------------------------------------------------------------
 # Main flow
 # ---------------------------------------------------------------------------
@@ -596,6 +650,7 @@ if "has_generated" not in st.session_state:
     st.session_state.has_generated = False
 if "energy_hist" not in st.session_state:
     st.session_state.energy_hist = []
+
 
 metrics_placeholder = st.empty()
 main_col, side_col = st.columns([3.4, 1])
@@ -606,6 +661,7 @@ with side_col:
     st.markdown("### Detected Objects")
     detection_panel = st.empty()
 
+
 show_empty_cta = not st.session_state.has_generated and not header_clicked
 empty_clicked = False
 if show_empty_cta:
@@ -615,18 +671,23 @@ if show_empty_cta:
         with cta_col:
             empty_clicked = st.button("Generate Scene", key="btn_empty_cta", width="stretch")
 
+
 do_generate = header_clicked or empty_clicked
+
 
 if do_generate:
     import handoff
     handoff._state = GridState()
 
+
     points, labels_gt, spikes_gt = build_scene()
     t_start = time.perf_counter()
+
 
     norm_tensor, raw_sampled = scene_to_tensor(points)
     inputs = torch.tensor(norm_tensor, dtype=torch.float32).unsqueeze(0).to(device)
     t_sample = time.perf_counter()
+
 
     with torch.no_grad():
         spk_rec = ai_model(inputs)
@@ -635,10 +696,12 @@ if do_generate:
     preds_np = torch.argmax(total_spikes, dim=1).squeeze().cpu().numpy()
     spikes_np = total_spikes.sum(dim=1).squeeze().cpu().numpy()
 
+
     active_map = generate_2_5d_grid(raw_sampled, preds_np, spikes_np)
     mem_stats = memory_metrics()
     t_grid = time.perf_counter()
     perf = profiler.evaluate_efficiency(spk_rec, time.perf_counter() - t_start, 1)
+
 
     records = []
     for key, cell in active_map:
@@ -652,6 +715,7 @@ if do_generate:
         })
     df = pd.DataFrame(records)
 
+
     st.session_state.has_generated = True
     st.session_state.last_df = df
     st.session_state.last_perf = perf
@@ -662,6 +726,7 @@ if do_generate:
     st.session_state.last_raw_point_count = int(points.shape[0])
     st.session_state.energy_hist = (st.session_state.energy_hist + [perf["energy_saved_pj"]])[-7:]
 
+
 if st.session_state.has_generated:
     df = st.session_state.last_df
     perf = st.session_state.last_perf
@@ -669,9 +734,11 @@ if st.session_state.has_generated:
     latency = st.session_state.last_latency
     raw_point_count = st.session_state.last_raw_point_count
 
+
     objects = cluster_objects(df, cluster_eps, cluster_min_pts) if show_bboxes else []
     fine = int((df['radius'] <= 10.0).sum()) if len(df) else 0
     coarse = int((df['radius'] > 10.0).sum()) if len(df) else 0
+
 
     metrics_placeholder.markdown(render_telemetry_html({
         "fps": perf["fps"], "active_cells": mem_stats["active_cell_count"],
@@ -679,7 +746,9 @@ if st.session_state.has_generated:
         "energy_pj": perf["energy_saved_pj"], "energy_hist": st.session_state.energy_hist,
         "n_objects": len(objects),
         "nearest_dist": objects[0]["distance"] if objects else None,
+        "savings_ratio": mem_stats["savings_ratio"],
     }), unsafe_allow_html=True)
+
 
     if len(df) == 0:
         with map_placeholder.container():
@@ -687,6 +756,7 @@ if st.session_state.has_generated:
     else:
         fig = go.Figure()
         class_counts = df["Class"].value_counts().to_dict()
+
 
         for class_label, color in CLASS_COLOR.items():
             sub = df[df["Class"] == class_label]
@@ -714,12 +784,15 @@ if st.session_state.has_generated:
                     marker=dict(size=sub["size"], color=color, opacity=0.75, line=dict(width=0)),
                 ))
 
+
         fig.add_trace(go.Scatter3d(
             x=[0], y=[0], z=[0], mode="markers", name="UGV", showlegend=False,
             marker=dict(size=10, color="yellow", symbol="diamond"),
         ))
 
+
         _add_polar_grid(fig)
+
 
         if show_zone_ring:
             theta = np.linspace(0, 2 * np.pi, 100)
@@ -729,12 +802,15 @@ if st.session_state.has_generated:
                 line=dict(color="#56ff9b", width=2, dash="dash"),
             ))
 
+
         if show_bboxes:
             for obj in objects:
                 add_bbox_trace(fig, obj, BOX_COLOR.get(obj["class"], "white"))
 
+
         _add_legend_overlay(fig, class_counts, len(df))
         _add_hud_overlay(fig, raw_point_count)
+
 
         fig.update_layout(
             showlegend=False,
@@ -755,8 +831,10 @@ if st.session_state.has_generated:
             uirevision="constant",
         )
 
+
         with map_placeholder.container():
             st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+
 
     debug_placeholder.markdown(
         f'<div style="display:flex;align-items:center;gap:11.2px;font-size:11px;'
@@ -767,7 +845,9 @@ if st.session_state.has_generated:
         unsafe_allow_html=True,
     )
 
+
     detection_panel.markdown(render_objects_panel_html(objects, latency), unsafe_allow_html=True)
+
 
 else:
     metrics_placeholder.markdown(render_telemetry_html(None), unsafe_allow_html=True)
