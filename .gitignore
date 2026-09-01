@@ -1,5 +1,70 @@
-# Ignore all markdown files everywhere
+# =========================
+# Python environments
+# =========================
+snn_env/
+.venv/
+venv/
+env/
+
+# =========================
+# Python cache / compiled files
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.nbc
+*.nbi
+
+# =========================
+# Build / packaging output
+# =========================
+build/
+dist/
+*.spec
+
+# =========================
+# Trained model checkpoints
+# =========================
+snn_weights.pth
+
+# =========================
+# IDE / editor files
+# =========================
+.vscode/
+.vscode-shared/
+.idea/
+
+# =========================
+# Claude / AI tooling
+# =========================
+.claude/
+.agents/
+.cagent/
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# Local/test data
+# =========================
+mock_kitti/
+mock_data/
+
+# =========================
+# Markdown
+# =========================
+# Ignore markdown files by default
 *.md
 
-# Do not ignore the README.md file in the root directory
+# Keep important project documentation
 !/README.md
+!/CLAUDE.md
+!/DESIGN.md
+!/DESIGN-dash_pro.md
+!/QUICKSTART.md
+!/Reports/*.md
