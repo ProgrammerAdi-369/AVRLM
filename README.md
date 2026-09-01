@@ -290,5 +290,4 @@ This repository maintains several documents; if they conflict, treat this order 
 
 ## License
 
-MIT License
-Copyright (c) 2026 AVRLM Contributors
+MIT License Copyright (c) 2026 AVRLM Contributors
