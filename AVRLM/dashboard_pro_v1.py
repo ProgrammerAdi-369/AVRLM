@@ -6,10 +6,7 @@ import torch
 import time
 import os
 import math
-import sys
 
-
-sys.path.append(os.path.join(os.path.dirname(__file__), 'AVRLM'))
 from spiking_model import SpikingPointNet
 from handoff import generate_2_5d_grid, memory_metrics
 from grid_state import GridState

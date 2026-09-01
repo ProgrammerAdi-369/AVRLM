@@ -1,0 +1,8 @@
+numpy
+torch
+snntorch
+streamlit
+pandas
+plotly
+PyQt6
+pyqtgraph
