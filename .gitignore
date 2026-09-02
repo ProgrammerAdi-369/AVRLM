@@ -12,6 +12,7 @@
 !/DESIGN.md
 !/DESIGN-dash_pro.md
 !/QUICKSTART.md
+!/DOCUMENTATION.md
 !/Reports/*.md
 
 # Compiled Python bytecode / JIT caches - never source of truth, and a
