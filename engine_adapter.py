@@ -72,6 +72,13 @@ VELOCITY_EMA_ALPHA = 0.35       # aggressive smoothing, justified by how extreme
 # (TRACK_MAX_AGE_FRAMES=15). RENDER_MIN_HITS=10 keeps roughly the top ~45%
 # most persistent tracks (measured: 36/80) as full icons.
 RENDER_MIN_HITS = 10
+# Hit count at which a track STARTS fading in. Promotion used to be a hard
+# switch at RENDER_MIN_HITS: one frame a track was a dim 1.4px density dot, the
+# next it was a full 16px glowing cube with a trail and a velocity arrow. That
+# instantaneous appearance is a large part of why objects read as coming out of
+# nowhere. Between these two counts a track is drawn as a real icon but ramped
+# in opacity, so it resolves into view instead of snapping into it.
+RENDER_FADE_IN_HITS = 6
 
 # Forward-corridor obstacle scan -- the input to closed-loop steering. This
 # reads the grid engine's CELLS, not ObjectTracker's detections, on purpose:
@@ -93,6 +100,13 @@ OBSTACLE_MIN_ELEVATION_M = 0.5
 CORRIDOR_LOOKAHEAD_M = 20.0
 CORRIDOR_HALF_WIDTH_M = 2.0
 CORRIDOR_MIN_CELLS = 8
+# Cells nearly abeam of the UGV are not something it can still steer around,
+# and counting them made the readout nonsensical: measured over 500 frames the
+# corridor reported obstacles at 0.07-0.42m while the nearest real object was
+# 2.0-2.7m away and passing alongside -- the forward PROJECTION of a cell beside
+# the vehicle is near zero. Requiring real forward separation keeps the range
+# readout and the "Obstacle in corridor at Xm" log line honest.
+CORRIDOR_MIN_FORWARD_M = 1.0
 EVASION_TURN_DEG = 35.0         # matches _advance_ugv's original turn magnitude
 # driving_sequence.py's actors advance per FRAME INDEX, not per wall-clock
 # second: the pedestrian moves 1.2m, the overtaking car 3.5m and the scripted
@@ -102,8 +116,20 @@ EVASION_TURN_DEG = 35.0         # matches _advance_ugv's original turn magnitude
 # same clock. Using the real ~0.12s step interval instead moved the UGV only
 # ~0.18m per frame while the car still moved 3.5m, so the car overran the UGV
 # within a few frames and sat on top of it (obstacles reported at 0.1m).
-SCENE_DT_S = 1.0
-LIVE_TURN_RATE_DEG_S = 18.0     # ~2 sequence frames to complete a 35-degree turn
+# One engine step used to advance the scene a FULL second, so with the engine
+# running at ~10-15 Hz the world played at roughly 8-15x real time: the car
+# crossed the whole display in three frames and every actor moved in large
+# visible jumps. build_driving_frame only ever uses frame_idx in linear
+# START + VELOCITY*idx terms, so a FRACTIONAL index is valid and is how the
+# scene is slowed without desynchronising the actors from the UGV -- both are
+# advanced by SCENE_STEP scene-seconds per engine step.
+SCENE_STEP = 0.25
+SCENE_DT_S = SCENE_STEP
+# Both of these are per scene-SECOND, not per engine frame, so they are
+# unaffected by SCENE_STEP: a manoeuvre still completes over the same distance
+# of travel, just spread across 1/SCENE_STEP times as many rendered frames --
+# which is exactly what makes the turn read as smooth instead of a snap.
+LIVE_TURN_RATE_DEG_S = 18.0     # a 35-degree turn takes ~2 scene-seconds
 EVASION_HOLD_S = 3.0            # scene-seconds to hold a manoeuvre before resuming
 # Lane recovery. Without it the UGV swerves around an obstacle, resumes the
 # nominal +X heading, and simply keeps the offset -- measured 17.7m of
@@ -124,10 +150,9 @@ LIVE_CLASS_LABELS = {1: "obstacle", 2: "vehicle"}   # 0=drivable excluded; grid 
 # the primary fix for track churn (that's TRACK_MATCH_RADIUS_M/TRACK_CONFIRM_HITS).
 LIVE_MIN_CLUSTER_CELLS = 5
 LIVE_CLUSTER_MERGE_RADIUS_M = 2.0   # merge same-class cluster centroids within this distance
-LIVE_N_FRAMES = 40
 # Measured: generate_2_5d_grid's snapshot() and the per-class cell filter in
 # _cluster_cells_to_detections are both O(total accumulated cells), which
-# only reset once per full LIVE_N_FRAMES loop replay -- step time grows from
+# only reset once per full scene replay -- step time grows from
 # ~57ms to ~360ms as accumulated cells grow from 7.5k to 131k across one
 # cycle. Resetting more often caps that growth (the actual measured FPS
 # bottleneck -- GPU inference is only ~12ms and already not the issue).
@@ -145,6 +170,7 @@ try:
     from spiking_model import SpikingPointNet
     from profiler import EdgeProfiler
     from driving_sequence import (build_driving_frame, get_ugv_position,
+                                  build_static_ground,
                                   UGV_SPEED as LIVE_UGV_SPEED_MPS)
     import handoff
     from handoff import generate_2_5d_grid
@@ -167,6 +193,7 @@ class TrackedObject:
     last_seen_frame: int = 0
     threat: bool = False            # True if projected path intersects UGV safety margin
     hits: int = 1                   # incremented on each successful match; rendered once >= TRACK_CONFIRM_HITS
+    render_alpha: float = 1.0       # 0..1 display opacity; see Engine.step's fade-in/fade-out
 
 
 @dataclass
@@ -202,7 +229,15 @@ def _scene_to_tensor(points, num_points=NUM_POINTS_LIVE, max_range=SENSOR_RANGE_
     Streamlit dashboard, which would drag in a streamlit dependency)."""
     n = points.shape[0]
     if n >= num_points:
-        idx = np.random.choice(n, num_points, replace=False)
+        # Deterministic evenly-spaced stride, NOT np.random.choice. The random
+        # draw picked a different ~8k of the ~24.8k points every frame, so even
+        # with a fixed scene the surviving points -- and therefore the occupied
+        # grid cells, the DBSCAN clusters and the density dots -- were re-rolled
+        # each frame. Combined with build_static_ground()'s fixed ring pattern,
+        # a fixed stride selects the SAME ground points every frame, which is
+        # what makes cells persist. This uses no label or per-object knowledge,
+        # only the point count, so it stays an honest sampler.
+        idx = np.linspace(0, n - 1, num_points).astype(np.intp)
     else:
         idx = np.pad(np.arange(n), (0, num_points - n), mode="wrap")
     pts_sampled = points[idx]
@@ -305,7 +340,7 @@ def _scan_corridor(active_map, heading_deg):
     forward = cx * sin_h + cy * cos_h
     lateral = cx * cos_h - cy * sin_h
 
-    in_corridor = (forward > 0) & (forward <= CORRIDOR_LOOKAHEAD_M) &                   (np.abs(lateral) <= CORRIDOR_HALF_WIDTH_M)
+    in_corridor = (forward > CORRIDOR_MIN_FORWARD_M) & (forward <= CORRIDOR_LOOKAHEAD_M) &                   (np.abs(lateral) <= CORRIDOR_HALF_WIDTH_M)
     n = int(in_corridor.sum())
     if n < CORRIDOR_MIN_CELLS:
         return False, None, 0, 0
@@ -431,6 +466,16 @@ class Engine:
                 # sensor noise still varies the way the prebuilt sequence's
                 # single shared rng did.
                 self._scene_rng = np.random.default_rng(2026)
+                # Generated once and reused every frame -- see
+                # build_static_ground's docstring for why redrawing it per
+                # frame was the dominant source of display churn.
+                self._static_ground = build_static_ground()
+                # First real DBSCAN call costs ~2.0s while joblib spins up its
+                # thread pool (measured: frame 2 of a 250-frame run took 2143ms
+                # against a 67.6ms median). Paying it here keeps that one-off
+                # freeze out of the first seconds of the live display.
+                DBSCAN(eps=LIVE_CLUSTER_EPS_M,
+                       min_samples=LIVE_CLUSTER_MIN_SAMPLES).fit(np.zeros((8, 2)))
                 self._ugv_x, self._ugv_y = get_ugv_position(0)
                 self._ugv_heading = 90.0    # +X world, the sequence's direction of travel
             except Exception as e:
@@ -510,9 +555,21 @@ class Engine:
         # see RENDER_MIN_HITS's comment for why hits, not speed, is the
         # signal that actually separates real/stable detections from
         # transient re-clustering noise.
+        # Both ends of a track's visible life are ramps rather than steps.
+        # fade_in: how established the track is (hit count).
+        # fade_out: how long since it was last actually matched -- a track that
+        #   stops matching used to keep rendering at full strength, frozen at
+        #   its last position, for TRACK_MAX_AGE_FRAMES and then vanish.
+        # Threat tracks bypass the fade-in: a real hazard must not be dimmed.
         tracks = []
+        fade_span = max(1, RENDER_MIN_HITS - RENDER_FADE_IN_HITS)
         for trk in confirmed:
-            if trk.threat or trk.hits >= RENDER_MIN_HITS:
+            fade_in = (trk.hits - RENDER_FADE_IN_HITS) / fade_span
+            fade_in = 1.0 if trk.threat else max(0.0, min(1.0, fade_in))
+            stale = self.frame_id - trk.last_seen_frame
+            fade_out = max(0.0, min(1.0, 1.0 - stale / TRACK_MAX_AGE_FRAMES))
+            trk.render_alpha = min(fade_in, fade_out)
+            if trk.render_alpha > 0.0:
                 tracks.append(trk)
             else:
                 density_points.append((trk.x, trk.y, trk.label))
@@ -540,17 +597,14 @@ class Engine:
     # then clusters the resulting cells into discrete detections.
     # ------------------------------------------------------------------
     def _live_step(self):
-        idx = (self.frame_id - 1) % LIVE_N_FRAMES
-        if idx == 0 and self.frame_id > 1:
-            # The actors' motion replays off idx, so when idx wraps the scene
-            # jumps back to its opening state. Return the UGV to the matching
-            # start pose too, otherwise each replay would begin with the
-            # actors teleporting relative to a UGV that has driven far down
-            # the corridor (and, once it steers, off the corridor entirely).
-            self._ugv_x, self._ugv_y = get_ugv_position(0)
-            self._ugv_heading = 90.0
-            self._evasion_active = False
-            self._evasion_target_heading = None
+        # Monotonic and fractional. This used to be
+        # `(self.frame_id - 1) % LIVE_N_FRAMES`, which restarted the actors
+        # every 40 frames and so had to teleport the UGV pose and evasion state
+        # back to the start to match -- the entire display changed at once,
+        # roughly every 5 seconds. driving_sequence's `continuous=True` recycles
+        # each actor around the UGV outside detection range instead, so there is
+        # no longer any discontinuity to resynchronise to.
+        idx = (self.frame_id - 1) * SCENE_STEP
         if self.frame_id % LIVE_RESET_EVERY_N_FRAMES == 1:
             # driving_sequence.py's points are ego-centric to EACH frame's own
             # UGV position, not a fixed world origin -- as the UGV translates,
@@ -563,7 +617,7 @@ class Engine:
             # sequence forever and reset every LIVE_RESET_EVERY_N_FRAMES
             # instead -- measured: generate_2_5d_grid's snapshot() and this
             # method's per-class cell filter are both O(total accumulated
-            # cells), so resetting only once per LIVE_N_FRAMES let step time
+            # cells), so resetting only once per scene replay let step time
             # grow from ~57ms to ~360ms across one cycle. Resetting more
             # often caps that growth while still preserving several frames'
             # worth of the event-driven caching behavior within each window.
@@ -574,7 +628,8 @@ class Engine:
         # Measured cost 9.8ms/frame, ~8% of the step budget.
         ugv_world_pos = (self._ugv_x, self._ugv_y)
         points, _labels_gt, _spikes_gt, _ = build_driving_frame(
-            idx, rng=self._scene_rng, ugv_pos=ugv_world_pos)
+            idx, rng=self._scene_rng, ugv_pos=ugv_world_pos,
+            ground=self._static_ground, continuous=True)
 
         t0 = time.perf_counter()
         norm_tensor, raw_sampled = _scene_to_tensor(points)

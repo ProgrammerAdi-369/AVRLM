@@ -50,26 +50,72 @@ OVERTAKING_CAR_VELOCITY = (3.5, 0.0)
 
 UGV_SPEED = 1.5
 
+# --- Continuous-loop parameters (opt-in; see build_driving_frame's `continuous`)
+# The scene originally replayed by wrapping the frame index modulo 40, which
+# teleported every actor at once every loop. Instead, each actor's world X is
+# recycled relative to the OBSERVER, over a span wide enough that the modulo
+# discontinuity always happens well outside the ~45m the engine detects at --
+# so an actor leaves ahead and re-enters from behind, never visibly jumping.
+ACTOR_WRAP_SPAN_M = 160.0     # world-X span the scene recycles over
+ACTOR_WRAP_BEHIND_M = 60.0    # how far behind the observer an actor re-enters
+# The pedestrian crosses laterally, so wrapping its Y would jump it across the
+# road in view. A triangle wave is continuous everywhere -- it simply walks
+# back the way it came, which is also a fair reading of "crossing the road".
+PEDESTRIAN_CROSS_HALF_M = 15.0
+
+
+def _wrap_ahead_behind(world_x, ref_x):
+    """Recycle world_x into [ref_x - BEHIND, ref_x - BEHIND + SPAN)."""
+    return ref_x - ACTOR_WRAP_BEHIND_M + (
+        (world_x - ref_x + ACTOR_WRAP_BEHIND_M) % ACTOR_WRAP_SPAN_M)
+
+
+def _triangle(v, half):
+    """Continuous back-and-forth within [-half, +half]; period 4*half."""
+    return abs(((v + half) % (4.0 * half)) - 2.0 * half) - half
+
 
 def get_ugv_position(frame_idx: int):
     return (UGV_SPEED * frame_idx, 0.0)
 
 
-def build_driving_frame(frame_idx: int, rng, ugv_pos=None):
+def build_static_ground(seed=2026):
+    """One fixed ground-plane return, generated once and reused across frames.
+
+    A real spinning LiDAR's ring pattern is FIXED -- the scene moves through
+    it -- so redrawing all 24,000 ground points from fresh random draws on
+    every call (which is what generate_ground_plane(rng=rng) does) is both
+    physically wrong and destroys frame-to-frame stability: measured Jaccard
+    overlap of the active grid-cell set between consecutive frames was 0.035,
+    i.e. 96.5% of cells were brand new each frame, which is what made objects
+    appear to come out of nowhere on the radar display."""
+    return generate_ground_plane(rng=np.random.default_rng(seed))
+
+
+def build_driving_frame(frame_idx, rng, ugv_pos=None, ground=None,
+                        continuous=False):
     """frame_idx drives the ACTORS' motion (pedestrian, overtaking car);
     ugv_pos is the observer's world position the scene is made ego-centric
     to. They are separate on purpose: when the UGV steers around an
     obstacle its pose is no longer get_ugv_position(frame_idx)'s scripted
     straight line, so engine_adapter.py passes its own closed-loop pose
-    here while the actors keep replaying off frame_idx. Omitting ugv_pos
-    keeps the original scripted behaviour (dashboard_driving.py's path)."""
+    here while the actors keep replaying off frame_idx. frame_idx may be
+    fractional -- it is only ever used in linear START + VELOCITY*idx terms
+    -- which is how the caller slows scene time below one scene-second per
+    step. `ground` supplies a reusable ground plane (see build_static_ground).
+    `continuous` recycles the actors around the observer instead of the
+    caller restarting them by wrapping frame_idx, which teleported the
+    whole scene at once.
+    Omitting ugv_pos, ground and continuous keeps the original behaviour
+    (dashboard_driving.py's path)."""
     ugv_pos = get_ugv_position(frame_idx) if ugv_pos is None else ugv_pos
     parts = []
 
-    ground = generate_ground_plane(rng=rng)
-    parts.append(ground)
+    parts.append(generate_ground_plane(rng=rng) if ground is None else ground)
 
     for pole_x, pole_y in STATIC_POLE_WORLD_POSITIONS:
+        if continuous:
+            pole_x = _wrap_ahead_behind(pole_x, ugv_pos[0])
         ego_x = pole_x - ugv_pos[0]
         ego_y = pole_y - ugv_pos[1]
         if abs(ego_x) <= 100.0 and abs(ego_y) <= 100.0:
@@ -77,6 +123,9 @@ def build_driving_frame(frame_idx: int, rng, ugv_pos=None):
 
     ped_x = PEDESTRIAN_START_WORLD[0] + PEDESTRIAN_VELOCITY[0] * frame_idx
     ped_y = PEDESTRIAN_START_WORLD[1] + PEDESTRIAN_VELOCITY[1] * frame_idx
+    if continuous:
+        ped_x = _wrap_ahead_behind(ped_x, ugv_pos[0])
+        ped_y = _triangle(ped_y, PEDESTRIAN_CROSS_HALF_M)
     ego_ped_x = ped_x - ugv_pos[0]
     ego_ped_y = ped_y - ugv_pos[1]
     if abs(ego_ped_x) <= 100.0 and abs(ego_ped_y) <= 100.0:
@@ -84,6 +133,8 @@ def build_driving_frame(frame_idx: int, rng, ugv_pos=None):
 
     car_x = OVERTAKING_CAR_START_WORLD[0] + OVERTAKING_CAR_VELOCITY[0] * frame_idx
     car_y = OVERTAKING_CAR_START_WORLD[1] + OVERTAKING_CAR_VELOCITY[1] * frame_idx
+    if continuous:
+        car_x = _wrap_ahead_behind(car_x, ugv_pos[0])
     ego_car_x = car_x - ugv_pos[0]
     ego_car_y = car_y - ugv_pos[1]
     if abs(ego_car_x) <= 100.0 and abs(ego_car_y) <= 100.0:

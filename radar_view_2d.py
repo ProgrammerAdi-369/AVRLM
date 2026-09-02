@@ -86,6 +86,11 @@ MAX_STEM_PX = 40                # clamp so a very tall object's pin can't fly of
 # the display reads clearly instead of every track competing for attention
 # regardless of distance; beyond it, a plain dot.
 DETAIL_RANGE_M = 25.0
+# Width of the cross-fade centred on DETAIL_RANGE_M. The near/far split used to
+# be a hard cut: a track crossing 25m changed between a 3.5px dot and a full
+# glowing cube in a single frame. Across this band the two treatments are
+# blended instead, so the transition is continuous.
+DETAIL_FADE_BAND_M = 6.0
 FAR_DOT_RADIUS_PX = 3.5
 
 DENSITY_DOT_ALPHA_NEAR = 70     # dimmer than ground-clutter dots (alpha 90) -- reads as
@@ -309,6 +314,14 @@ class RadarView2D(QWidget):
         p.drawPath(path)
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _fade(color, alpha_scale, base_alpha=255):
+        """Colour at a fraction of full opacity -- the single place display
+        fades are applied, so callers never mutate the shared LABEL_COLORS."""
+        c = QColor(color)
+        c.setAlpha(max(0, min(255, int(base_alpha * alpha_scale))))
+        return c
+
     def _draw_cube_icon(self, p, x, y, size, color, glow=False):
         """Small isometric-looking 'target' glyph -- a flat 2D trick
         (offset square + connecting lines) to read as a 3D box without
@@ -316,7 +329,9 @@ class RadarView2D(QWidget):
         if glow:
             grad = QRadialGradient(x, y, size * 2.6)
             glow_color = QColor(color)
-            glow_color.setAlpha(140)
+            # Scale by the incoming colour's own alpha so a fading track's
+            # glow fades with it instead of staying at full strength.
+            glow_color.setAlpha(int(140 * color.alphaF()))
             grad.setColorAt(0.0, glow_color)
             grad.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))
             p.setPen(Qt.PenStyle.NoPen)
@@ -373,15 +388,29 @@ class RadarView2D(QWidget):
             base_color = LABEL_COLORS.get(trk.label, GREY)
             color = RED if trk.threat else base_color
 
-            if r > DETAIL_RANGE_M:
-                # Beyond detail range: a plain dot, no glow/trail/arrow --
-                # full glyph treatment is reserved for near obstacles so the
-                # display reads clearly instead of every track competing for
-                # attention regardless of distance.
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(QBrush(color))
-                p.drawEllipse(QPointF(x, y), FAR_DOT_RADIUS_PX, FAR_DOT_RADIUS_PX)
+            # Engine-supplied 0..1 opacity: ramps up as a track establishes
+            # itself and back down as it goes unmatched, so tracks resolve in
+            # and decay out instead of appearing and vanishing between frames.
+            a = trk.render_alpha
+            if a <= 0.0:
                 continue
+
+            # Cross-fade the near/far treatments across DETAIL_FADE_BAND_M
+            # rather than switching at DETAIL_RANGE_M.
+            detail = (DETAIL_RANGE_M + DETAIL_FADE_BAND_M / 2 - r) / DETAIL_FADE_BAND_M
+            detail = max(0.0, min(1.0, detail))
+
+            if detail < 1.0:
+                # Far treatment: a plain dot, no glow/trail/arrow -- full glyph
+                # treatment is reserved for near obstacles so the display reads
+                # clearly instead of every track competing for attention
+                # regardless of distance.
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QBrush(self._fade(color, a * (1.0 - detail))))
+                p.drawEllipse(QPointF(x, y), FAR_DOT_RADIUS_PX, FAR_DOT_RADIUS_PX)
+                if detail <= 0.0:
+                    continue
+            a *= detail
 
             if trk.is_dynamic and len(trk.history) > 1:
                 path = QPainterPath()
@@ -392,9 +421,7 @@ class RadarView2D(QWidget):
                         path.moveTo(hxp, hyp)
                     else:
                         path.lineTo(hxp, hyp)
-                trail_color = QColor(color)
-                trail_color.setAlpha(130)
-                p.setPen(QPen(trail_color, 1.8))
+                p.setPen(QPen(self._fade(color, a, 130), 1.8))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawPath(path)
 
@@ -403,19 +430,15 @@ class RadarView2D(QWidget):
             show_pin = trk.z >= MIN_ELEVATION_FOR_PIN_M
 
             if show_pin:
-                shadow_color = QColor(color)
-                shadow_color.setAlpha(90)
-                p.setPen(QPen(shadow_color, 1))
+                p.setPen(QPen(self._fade(color, a, 90), 1))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawEllipse(QPointF(x, y), 4, 4)
 
-                stem_color = QColor(color)
-                stem_color.setAlpha(130)
-                p.setPen(QPen(stem_color, 1.2))
+                p.setPen(QPen(self._fade(color, a, 130), 1.2))
                 p.drawLine(QPointF(x, y), QPointF(x, icon_y))
 
-            self._draw_cube_icon(p, x, icon_y, 16 if trk.is_dynamic else 12, color,
-                                  glow=trk.threat)
+            self._draw_cube_icon(p, x, icon_y, (16 if trk.is_dynamic else 12) * detail,
+                                  self._fade(color, a), glow=trk.threat)
 
             vx, vy = trk.velocity
             if trk.is_dynamic and abs(vx) + abs(vy) > 0.05:
@@ -425,7 +448,7 @@ class RadarView2D(QWidget):
                     scale = VELOCITY_ARROW_MAX_M / reach
                     ox, oy = ox * scale, oy * scale
                 (tx, ty), _tip_r = self._world_to_px(trk.x + ox, trk.y + oy, polar_to_px)
-                p.setPen(QPen(color, 2))
+                p.setPen(QPen(self._fade(color, a), 2))
                 p.drawLine(QPointF(x, y), QPointF(tx, ty))
 
     def _draw_ugv(self, p, cx, cy):
