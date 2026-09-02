@@ -53,13 +53,58 @@ LABEL_COLORS = {
     "drivable": GREY,
 }
 
-RANGE_RINGS = (20, 40, 60, 80, 100)
+# Rings are DERIVED from the display range, never hardcoded: DESIGN-APP.md
+# flags that the old fixed (20,40,60,80,100) tuple agreed with the bezel only
+# because SENSOR_RANGE_M happened to be exactly 100.0, so any rescale would
+# silently draw a 100m ring outside the dial. Picks the step that yields 3-6
+# rings; at 100m this still produces exactly (20,40,60,80,100).
+_RING_STEPS = (2, 5, 10, 20, 25, 50)
+
+
+def _range_rings(display_range_m):
+    for step in _RING_STEPS:
+        if 3 <= display_range_m / step <= 6:
+            break
+    n = int(display_range_m / step)
+    return tuple(step * (k + 1) for k in range(n))
 SWEEP_PERIOD_S = 4.0        # seconds for one full sweep rotation
 SWEEP_ARC_DEG = 55          # width of the fading sweep wedge
 
+# What the dial spans, which is deliberately NOT the 100m sensor range.
+# Measured detection ranges: median 13.3m, 87% within 40m, 95% within 50m.
+# At 100m the dial resolved only 3.8 px/m, which left the 2m navigation
+# corridor a ~15px sliver and pushed every real object into a knot at the
+# centre. 40m gives 9.6 px/m; the few detections beyond it clip at the rim.
+DISPLAY_RANGE_M = 40.0
+
+ELEVATION_PX_PER_M = 8          # screen px per meter of height (fixed visual scale, not range-scaled)
+MIN_ELEVATION_FOR_PIN_M = 0.5   # below this: render exactly as before (icon at ground point)
+MAX_STEM_PX = 40                # clamp so a very tall object's pin can't fly off-panel
+
+# Measured track range distribution (real clustered detections): median
+# 26.1m, 46.7% within 25m -- full glyph treatment only within this range so
+# the display reads clearly instead of every track competing for attention
+# regardless of distance; beyond it, a plain dot.
+DETAIL_RANGE_M = 25.0
+FAR_DOT_RADIUS_PX = 3.5
+
+DENSITY_DOT_ALPHA_NEAR = 70     # dimmer than ground-clutter dots (alpha 90) -- reads as
+DENSITY_DOT_ALPHA_FAR = 45      # "sensor return" texture, not discrete objects
+DENSITY_DOT_RADIUS_NEAR = 1.4
+DENSITY_DOT_RADIUS_FAR = 0.9
+
+# Cap on the DRAWN length of a velocity arrow. The underlying velocity is
+# untouched (is_dynamic and threat evaluation still use it in full); this is
+# purely legibility. Measured arrow length (|v| * 2.5s) over 120 live frames:
+# median 26.5m, p90 37.6m, max 53.0m -- on a 40m dial the median arrow reached
+# two thirds of the way to the rim and 6% overshot it entirely, turning the
+# display into a web of crossing lines. The lengths come from re-clustering
+# jitter, not real motion (AUDIT-V3 §3.3), so nothing meaningful is lost.
+VELOCITY_ARROW_MAX_M = 8.0
+
 
 class RadarView2D(QWidget):
-    def __init__(self, sensor_range_m=100.0, parent=None):
+    def __init__(self, sensor_range_m=DISPLAY_RANGE_M, parent=None):
         super().__init__(parent)
         self.sensor_range_m = sensor_range_m
         self.setMinimumSize(400, 400)
@@ -90,7 +135,7 @@ class RadarView2D(QWidget):
             # bias toward two loose bands rather than a uniform disc,
             # just so it doesn't look like a flat random fill
             band = rng.choice([-1, 1])
-            r = rng.uniform(15, 98)
+            r = rng.uniform(4, DISPLAY_RANGE_M * 0.98)
             jitter = rng.uniform(-18, 18) * band
             dots.append((ang, r, jitter))
         return dots
@@ -130,6 +175,8 @@ class RadarView2D(QWidget):
         self._draw_compass_bezel(p, cx, cy, R)
 
         if self._frame is not None:
+            self._draw_density_field(p, polar_to_px)
+            self._draw_planned_path(p, polar_to_px)
             self._draw_evasion_arc(p, polar_to_px)
             self._draw_tracks(p, polar_to_px)
 
@@ -154,7 +201,7 @@ class RadarView2D(QWidget):
 
     def _draw_range_rings(self, p, cx, cy, R):
         p.setFont(QFont("Consolas", 8))
-        for r_m in RANGE_RINGS:
+        for r_m in _range_rings(self.sensor_range_m):
             rr = (r_m / self.sensor_range_m) * R
             p.setPen(QPen(GRID, 1))
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -197,15 +244,59 @@ class RadarView2D(QWidget):
             p.setBrush(QBrush(QColor(60, 220, 120, 90)))
             p.drawEllipse(QPointF(x, y), 1.3, 1.3)
 
+    def _draw_planned_path(self, p, polar_to_px):
+        """The forward corridor the navigation controller is actually
+        scanning, plus the heading it has chosen. Because this is a
+        heading-up display the corridor is always a vertical band rising
+        from the UGV, so its edges are just two bearings at +/- the angle
+        that CORRIDOR_HALF_WIDTH_M subtends at each range -- no new
+        transform math, same polar_to_px the rest of the view uses."""
+        frame = self._frame
+        look = getattr(frame, "corridor_lookahead_m", None)
+        if not look:
+            return
+        half = frame.corridor_half_width_m
+        blocked = frame.corridor_blocked
+
+        edge = QColor(AMBER) if blocked else QColor(ACCENT)
+        edge.setAlpha(220 if blocked else 80)
+        p.setPen(QPen(edge, 2.0 if blocked else 1.4,
+                      Qt.PenStyle.SolidLine if blocked else Qt.PenStyle.DashLine))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for side in (-1, 1):
+            path = QPainterPath()
+            for i in range(13):
+                r = 0.6 + (look - 0.6) * i / 12
+                bearing = math.degrees(math.atan2(side * half, r))
+                x, y = polar_to_px(math.hypot(r, half), bearing)
+                path.moveTo(x, y) if i == 0 else path.lineTo(x, y)
+            p.drawPath(path)
+
+        # Range readout on the blocking obstacle.
+        if blocked and frame.corridor_closest_m is not None:
+            x, y = polar_to_px(frame.corridor_closest_m, 0)
+            p.setPen(QPen(AMBER, 1.6))
+            p.drawLine(QPointF(x - 9, y), QPointF(x + 9, y))
+            p.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
+            p.drawText(QPointF(x + 13, y + 3), f"{frame.corridor_closest_m:.1f}m")
+
+
     def _draw_evasion_arc(self, p, polar_to_px):
         frame = self._frame
         if not (frame.evasion_active and frame.evasion_target_heading_deg is not None):
             return
+        # evasion_target_heading_deg is absolute (world); on a heading-up
+        # display the offset from the current heading IS the on-screen angle.
+        # This was hardcoded to +35, which drew a right-hand arc even when the
+        # UGV was steering left -- harmless while the evasion state machine
+        # never ran in live mode, actively misleading now that it does.
+        rel = (self._frame.evasion_target_heading_deg
+               - self._frame.ugv_heading_deg + 180) % 360 - 180
         path = QPainterPath()
         steps = 24
         for i in range(steps):
             t = i / (steps - 1)
-            bearing = t * 35
+            bearing = t * rel
             r = 2 + t * 20
             x, y = polar_to_px(r, bearing)
             if i == 0:
@@ -249,26 +340,54 @@ class RadarView2D(QWidget):
         ):
             p.drawLine(QPointF(corner[0], corner[1]), QPointF(corner[2], corner[3]))
 
+    def _world_to_px(self, wx, wy, polar_to_px):
+        """Shared bearing/range/polar_to_px transform for any world-frame
+        point relative to the current frame's UGV pose -- factored out so
+        _draw_density_field doesn't reimplement the math _draw_tracks
+        already needs for track heads, trail points, and velocity tips."""
+        bearing = math.degrees(math.atan2(
+            wx - self._frame.ugv_x, wy - self._frame.ugv_y
+        )) - self._frame.ugv_heading_deg
+        r = math.hypot(wx - self._frame.ugv_x, wy - self._frame.ugv_y)
+        return polar_to_px(r, bearing), r
+
+    def _draw_density_field(self, p, polar_to_px):
+        # Non-tracked background classification (frame.density_points):
+        # small, dim, plain dots -- reads as "sensor return" texture, not
+        # discrete objects. Drawn before the evasion arc/tracks/UGV glyph
+        # so it sits visually beneath them.
+        p.setPen(Qt.PenStyle.NoPen)
+        for wx, wy, label in self._frame.density_points:
+            (x, y), r = self._world_to_px(wx, wy, polar_to_px)
+            color = QColor(LABEL_COLORS.get(label, GREY))
+            near = r <= DETAIL_RANGE_M
+            color.setAlpha(DENSITY_DOT_ALPHA_NEAR if near else DENSITY_DOT_ALPHA_FAR)
+            p.setBrush(QBrush(color))
+            radius = DENSITY_DOT_RADIUS_NEAR if near else DENSITY_DOT_RADIUS_FAR
+            p.drawEllipse(QPointF(x, y), radius, radius)
+
     def _draw_tracks(self, p, polar_to_px):
         for trk in self._frame.tracks:
-            bearing = math.degrees(math.atan2(
-                trk.x - self._frame.ugv_x, trk.y - self._frame.ugv_y
-            )) - self._frame.ugv_heading_deg
-            r = math.hypot(trk.x - self._frame.ugv_x, trk.y - self._frame.ugv_y)
-            x, y = polar_to_px(r, bearing)
+            (x, y), r = self._world_to_px(trk.x, trk.y, polar_to_px)
 
             base_color = LABEL_COLORS.get(trk.label, GREY)
             color = RED if trk.threat else base_color
+
+            if r > DETAIL_RANGE_M:
+                # Beyond detail range: a plain dot, no glow/trail/arrow --
+                # full glyph treatment is reserved for near obstacles so the
+                # display reads clearly instead of every track competing for
+                # attention regardless of distance.
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QBrush(color))
+                p.drawEllipse(QPointF(x, y), FAR_DOT_RADIUS_PX, FAR_DOT_RADIUS_PX)
+                continue
 
             if trk.is_dynamic and len(trk.history) > 1:
                 path = QPainterPath()
                 pts = trk.history + [(trk.x, trk.y)]
                 for i, (hx, hy) in enumerate(pts):
-                    hb = math.degrees(math.atan2(
-                        hx - self._frame.ugv_x, hy - self._frame.ugv_y
-                    )) - self._frame.ugv_heading_deg
-                    hr = math.hypot(hx - self._frame.ugv_x, hy - self._frame.ugv_y)
-                    hxp, hyp = polar_to_px(hr, hb)
+                    (hxp, hyp), _hr = self._world_to_px(hx, hy, polar_to_px)
                     if i == 0:
                         path.moveTo(hxp, hyp)
                     else:
@@ -279,18 +398,33 @@ class RadarView2D(QWidget):
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawPath(path)
 
-            self._draw_cube_icon(p, x, y, 16 if trk.is_dynamic else 12, color,
+            dz_px = min(trk.z * ELEVATION_PX_PER_M, MAX_STEM_PX)
+            icon_y = y - dz_px
+            show_pin = trk.z >= MIN_ELEVATION_FOR_PIN_M
+
+            if show_pin:
+                shadow_color = QColor(color)
+                shadow_color.setAlpha(90)
+                p.setPen(QPen(shadow_color, 1))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(QPointF(x, y), 4, 4)
+
+                stem_color = QColor(color)
+                stem_color.setAlpha(130)
+                p.setPen(QPen(stem_color, 1.2))
+                p.drawLine(QPointF(x, y), QPointF(x, icon_y))
+
+            self._draw_cube_icon(p, x, icon_y, 16 if trk.is_dynamic else 12, color,
                                   glow=trk.threat)
 
             vx, vy = trk.velocity
             if trk.is_dynamic and abs(vx) + abs(vy) > 0.05:
-                tip_bearing = math.degrees(math.atan2(
-                    (trk.x + vx * 2.5) - self._frame.ugv_x,
-                    (trk.y + vy * 2.5) - self._frame.ugv_y,
-                )) - self._frame.ugv_heading_deg
-                tip_r = math.hypot(trk.x + vx * 2.5 - self._frame.ugv_x,
-                                    trk.y + vy * 2.5 - self._frame.ugv_y)
-                tx, ty = polar_to_px(tip_r, tip_bearing)
+                ox, oy = vx * 2.5, vy * 2.5
+                reach = math.hypot(ox, oy)
+                if reach > VELOCITY_ARROW_MAX_M:
+                    scale = VELOCITY_ARROW_MAX_M / reach
+                    ox, oy = ox * scale, oy * scale
+                (tx, ty), _tip_r = self._world_to_px(trk.x + ox, trk.y + oy, polar_to_px)
                 p.setPen(QPen(color, 2))
                 p.drawLine(QPointF(x, y), QPointF(tx, ty))
 

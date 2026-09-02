@@ -55,8 +55,15 @@ def get_ugv_position(frame_idx: int):
     return (UGV_SPEED * frame_idx, 0.0)
 
 
-def build_driving_frame(frame_idx: int, rng):
-    ugv_pos = get_ugv_position(frame_idx)
+def build_driving_frame(frame_idx: int, rng, ugv_pos=None):
+    """frame_idx drives the ACTORS' motion (pedestrian, overtaking car);
+    ugv_pos is the observer's world position the scene is made ego-centric
+    to. They are separate on purpose: when the UGV steers around an
+    obstacle its pose is no longer get_ugv_position(frame_idx)'s scripted
+    straight line, so engine_adapter.py passes its own closed-loop pose
+    here while the actors keep replaying off frame_idx. Omitting ugv_pos
+    keeps the original scripted behaviour (dashboard_driving.py's path)."""
+    ugv_pos = get_ugv_position(frame_idx) if ugv_pos is None else ugv_pos
     parts = []
 
     ground = generate_ground_plane(rng=rng)

@@ -36,7 +36,9 @@ Run:
 
 import sys
 import math
+import time
 import collections
+from dataclasses import replace
 
 import numpy as np
 
@@ -44,13 +46,14 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QFrame, QListWidget, QListWidgetItem
 )
-from PyQt6.QtCore import Qt, QTimer, QElapsedTimer
+from PyQt6.QtCore import Qt, QTimer, QElapsedTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 
 import pyqtgraph as pg
 
-from engine_adapter import Engine, TARGET_FPS, SENSOR_RANGE_M
-from radar_view_2d import RadarView2D
+from engine_adapter import Engine, TARGET_FPS
+from radar_view_2d import RadarView2D, DISPLAY_RANGE_M
+from terrain_relief import TerrainReliefView
 
 pg.setConfigOptions(antialias=True, background=(4, 6, 12), foreground=(210, 235, 230))
 
@@ -72,6 +75,42 @@ LABEL_COLORS_GL = {
 
 ROLLING_WINDOW = 150
 MAX_LOG_LINES = 200
+WORKER_MAX_HZ = 60.0    # cap for synthetic mode (near-instant steps); real
+                        # live-mode inference (~200ms/frame, measured) runs
+                        # flat-out well below this cap regardless.
+
+
+# ==========================================================================
+# ENGINE WORKER
+# ==========================================================================
+class EngineWorker(QThread):
+    """Runs Engine.step() on a background thread. Real live-mode inference
+    measured at ~200ms/frame (6-10x the 30fps UI budget), so it must not
+    block the Qt main thread -- the UI thread instead redraws at 30fps from
+    whatever Frame this worker most recently emitted. Emits plain Frame
+    dataclass objects only (no Qt objects), keeping all Qt-specific work on
+    the receiving (main) thread, per the same Qt-free-core pattern already
+    used in terrain_relief.py."""
+    frame_ready = pyqtSignal(object)
+
+    def __init__(self, engine, parent=None):
+        super().__init__(parent)
+        self.engine = engine
+        self._running = True
+
+    def run(self):
+        min_interval = 1.0 / WORKER_MAX_HZ
+        while self._running:
+            t0 = time.perf_counter()
+            frame = self.engine.step()
+            self.frame_ready.emit(frame)
+            remaining = min_interval - (time.perf_counter() - t0)
+            if remaining > 0:
+                self.msleep(int(remaining * 1000))
+
+    def stop(self):
+        self._running = False
+        self.wait(2000)
 
 
 # ==========================================================================
@@ -122,9 +161,22 @@ class AVRLMRadarWindow(QMainWindow):
 
         self._build_ui()
 
+        self._latest_frame = None
+        self._prev_frame = None
+        self._latest_frame_wall_time = None
+        self._frame_interval = 1.0 / 30.0
+        self._last_frame_id = None
+        self._worker = EngineWorker(self.engine, parent=self)
+        self._worker.frame_ready.connect(self._on_engine_frame)
+        self._worker.start()
+
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._on_frame)
         self.timer.start(int(1000 / 30))   # UI redraw cap: 30 fps, independent of engine fps
+
+    def closeEvent(self, event):
+        self._worker.stop()
+        super().closeEvent(event)
 
     # ------------------------------------------------------------------
     def _build_ui(self):
@@ -176,10 +228,16 @@ class AVRLMRadarWindow(QMainWindow):
         left_wrap.setFixedWidth(190)
         main_row.addWidget(left_wrap)
 
-        self.radar = RadarView2D(sensor_range_m=SENSOR_RANGE_M)
+        # Dial spans DISPLAY_RANGE_M (40m), not the 100m sensor range -- see
+        # radar_view_2d.DISPLAY_RANGE_M for the measured reason. Detection
+        # range is unchanged; this is purely how much of it the dial shows.
+        self.radar = RadarView2D(sensor_range_m=DISPLAY_RANGE_M)
         main_row.addWidget(self.radar, stretch=3)
 
         right_col = QVBoxLayout()
+        right_col.addWidget(self._section_label("NEAR-FIELD TERRAIN"))
+        self.terrain_view = TerrainReliefView()
+        right_col.addWidget(self.terrain_view)
         right_col.addWidget(self._section_label("EVENT LOG"))
         self.log_list = QListWidget()
         self.log_list.setStyleSheet("""
@@ -223,12 +281,62 @@ class AVRLMRadarWindow(QMainWindow):
         return w, curve
 
     # ------------------------------------------------------------------
-    def _on_frame(self):
-        frame = self.engine.step()
+    def _on_engine_frame(self, frame):
+        now = time.perf_counter()
+        if self._latest_frame is not None:
+            self._prev_frame = self._latest_frame
+            if self._latest_frame_wall_time is not None:
+                self._frame_interval = max(now - self._latest_frame_wall_time, 1e-3)
+        self._latest_frame = frame
+        self._latest_frame_wall_time = now
 
-        self.fps_hist.append(frame.fps)
-        self.spike_hist.append(frame.spike_rate)
-        self.latency_hist.append(frame.latency_ms)
+    def _build_display_frame(self, latest):
+        # Real engine frames arrive slower (and less regularly) than this
+        # 30fps redraw tick -- holding the last frame static until the next
+        # one arrives makes motion look stepped. Instead, extrapolate track/
+        # UGV positions forward from the last two real frames at their
+        # measured velocity, so on-screen motion looks smooth at whatever
+        # the real engine rate ends up being. This is display-only: the
+        # returned Frame is never fed back into the engine or tracker.
+        prev = self._prev_frame
+        if prev is None or self._latest_frame_wall_time is None:
+            return latest
+        t = (time.perf_counter() - self._latest_frame_wall_time) / self._frame_interval + 1.0
+        t = max(0.0, min(t, 2.0))   # clamp: at most one extra full interval of extrapolation
+
+        prev_by_id = {trk.track_id: trk for trk in prev.tracks}
+        interp_tracks = []
+        for trk in latest.tracks:
+            p = prev_by_id.get(trk.track_id)
+            if p is None:
+                interp_tracks.append(trk)
+                continue
+            interp_tracks.append(replace(trk, x=p.x + (trk.x - p.x) * t, y=p.y + (trk.y - p.y) * t))
+
+        iux = prev.ugv_x + (latest.ugv_x - prev.ugv_x) * t
+        iuy = prev.ugv_y + (latest.ugv_y - prev.ugv_y) * t
+        diff = (latest.ugv_heading_deg - prev.ugv_heading_deg + 180) % 360 - 180
+        iuh = (prev.ugv_heading_deg + diff * t) % 360
+
+        return replace(latest, tracks=interp_tracks, ugv_x=iux, ugv_y=iuy, ugv_heading_deg=iuh)
+
+    def _on_frame(self):
+        frame = self._latest_frame
+        if frame is None:
+            return   # worker hasn't produced a frame yet
+
+        # Real live-mode inference (~200ms/frame, measured) runs slower than
+        # this 30fps redraw tick, so the same Frame is often still the
+        # latest across several consecutive calls -- only append to
+        # history/log once per distinct engine frame, not once per redraw,
+        # or the sparkline time axis and event log would both duplicate.
+        is_new = frame.frame_id != self._last_frame_id
+        self._last_frame_id = frame.frame_id
+
+        if is_new:
+            self.fps_hist.append(frame.fps)
+            self.spike_hist.append(frame.spike_rate)
+            self.latency_hist.append(frame.latency_ms)
 
         elapsed = self.clock.elapsed() // 1000
         h, m, s = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
@@ -236,27 +344,34 @@ class AVRLMRadarWindow(QMainWindow):
         self.speed_lbl.setText(f"SPEED {frame.ugv_speed_mps:0.1f} m/s")
         self.heading_lbl.setText(f"HDG {frame.ugv_heading_deg:03.0f}°")
 
-        self.card_fps.set_value(f"{frame.fps:.0f}", f"target {TARGET_FPS}")
+        # TARGET_FPS (261) is a leftover synthetic-mode display constant --
+        # not a meaningful target for live inference, so don't show it then.
+        self.card_fps.set_value(f"{frame.fps:.0f}",
+                                 "30fps UI cap" if self.engine.live else f"target {TARGET_FPS}")
         self.card_latency.set_value(f"{frame.latency_ms:.2f} ms")
         self.card_spike.set_value(f"{frame.spike_rate * 100:.1f}%")
         self.card_sparsity.set_value(f"{frame.sparsity * 100:.1f}%")
         self.card_mode.set_value("LIVE" if self.engine.live else "SYNTHETIC",
-                                  "spiking_model.py" if self.engine.live else "demo fallback")
+                                  "spiking_model.py" if self.engine.live
+                                  else (self.engine.live_init_error or "demo fallback"))
 
-        self.radar.update_frame(frame)
+        display_frame = self._build_display_frame(frame)
+        self.radar.update_frame(display_frame)
+        self.terrain_view.update_frame(display_frame)
 
-        for event in frame.log_events:
-            item = QListWidgetItem(f"> {event}")
-            if "evasive" in event.lower():
-                item.setForeground(QColor("#ffb020"))
-            self.log_list.addItem(item)
-            if self.log_list.count() > MAX_LOG_LINES:
-                self.log_list.takeItem(0)
-            self.log_list.scrollToBottom()
+        if is_new:
+            for event in frame.log_events:
+                item = QListWidgetItem(f"> {event}")
+                if "evasive" in event.lower():
+                    item.setForeground(QColor("#ffb020"))
+                self.log_list.addItem(item)
+                if self.log_list.count() > MAX_LOG_LINES:
+                    self.log_list.takeItem(0)
+                self.log_list.scrollToBottom()
 
-        self.fps_curve.setData(list(self.fps_hist))
-        self.spike_curve.setData(list(self.spike_hist))
-        self.latency_curve.setData(list(self.latency_hist))
+            self.fps_curve.setData(list(self.fps_hist))
+            self.spike_curve.setData(list(self.spike_hist))
+            self.latency_curve.setData(list(self.latency_hist))
 
 
 def main():
